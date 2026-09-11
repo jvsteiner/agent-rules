@@ -20,8 +20,8 @@ beyond the files themselves.
 
 | | |
 |---|---|
-| Rule loader and matcher | **Built**, 18 tests |
-| The ten starter rules | Not written |
+| Rule loader and matcher | **Built**, 46 tests |
+| The ten starter rules | **Written**, each with a firing case and a quiet case |
 | Claude Code plugin and hooks | Not built |
 | Installer | Not built |
 

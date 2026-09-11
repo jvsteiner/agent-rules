@@ -38,6 +38,17 @@ export function looksLikeGlob(t) {
   return /^\*\.[^\s/]+$/.test(t);
 }
 
+/**
+ * Characters that mean a string was written as a regex, not a glob.
+ *
+ * omp swallows any condition containing a `/` into a scope and leaves the
+ * condition as `.*` — which matches every edit, silently. A regex with a
+ * character class like `[A-Za-z0-9/+]` trips it. The behaviour below is left
+ * exactly as omp has it; this constant only powers a warning, so the mistake
+ * is loud instead of silent.
+ */
+const REGEX_CHARS = /[\\[\]{}()|+?^$]/;
+
 const toList = (v) =>
   v === undefined || v === null || v === ""
     ? []
@@ -53,9 +64,16 @@ export function normalise(front) {
   const raw = front.condition ?? front.ttsr_trigger ?? front.ttsrTrigger;
   const conditions = [];
   const fromGlob = [];
+  const notes = [];
 
   for (const entry of toList(raw)) {
     if (looksLikeGlob(entry)) {
+      if (REGEX_CHARS.test(entry)) {
+        notes.push(
+          `condition looks like a regex but contains "/", so it was read as a ` +
+            `file glob and the rule now matches every edit: ${entry}`,
+        );
+      }
       for (const tool of WATCHED_TOOLS) fromGlob.push(`tool:${tool}(${entry})`);
       continue;
     }
@@ -66,6 +84,7 @@ export function normalise(front) {
   return {
     condition: [...new Set(conditions)],
     scope: [...new Set([...toList(front.scope), ...fromGlob])],
+    notes,
   };
 }
 
@@ -100,6 +119,7 @@ export function parseRule(name, src) {
     delivery: deliveryOf(front),
     conditions: n.condition.map(compileCondition),
     scopes: n.scope.map(parseScope),
+    notes: n.notes,
   };
 }
 
@@ -128,7 +148,9 @@ export function loadRules(dirs) {
     for (const file of listMarkdown(dir)) {
       const name = basename(file, ".md");
       try {
-        byName.set(name, { ...parseRule(name, readFileSync(file, "utf8")), file });
+        const rule = parseRule(name, readFileSync(file, "utf8"));
+        for (const note of rule.notes) warnings.push(`${file}: ${note}`);
+        byName.set(name, { ...rule, file });
       } catch (e) {
         warnings.push(`${file}: ${e.message}`);
       }

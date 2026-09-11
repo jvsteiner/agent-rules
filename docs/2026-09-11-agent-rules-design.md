@@ -1,7 +1,7 @@
 # agent-rules — design
 
 > Date: 2026-09-11
-> Status: §1-§8 agreed; the loader and matcher are built (§12 step 1)
+> Status: §1-§8 agreed; §12 steps 1 and 2 done
 > Decisions taken: Node (not Rust); global symlink only; omp's format as-is
 
 One set of rule files. Two readers: **omp** reads them natively, and a **Claude

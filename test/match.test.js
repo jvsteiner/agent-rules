@@ -51,6 +51,21 @@ test("a condition that is really a glob becomes an edit+write scope", () => {
   assert.deepEqual(n.scope, ["tool:edit(*.ts)", "tool:write(*.ts)"]);
 });
 
+test("a regex containing a slash is swallowed as a glob, loudly", () => {
+  // omp reads any condition containing "/" as a file glob, so a regex with a
+  // character class like [A-Za-z0-9/+] silently becomes `.*` and matches every
+  // edit. This cost a rule that fired on all 1,044 files in a dry run. The
+  // behaviour is kept identical to omp; only the warning is ours.
+  const n = normalise({ condition: "(secret)\\s*=\\s*[A-Za-z0-9/+]{16,}" });
+  assert.deepEqual(n.condition, [".*"]);
+  assert.equal(n.notes.length, 1);
+  assert.match(n.notes[0], /matches every edit/);
+});
+
+test("an ordinary file glob converts without a warning", () => {
+  assert.deepEqual(normalise({ condition: "src/*.ts" }).notes, []);
+});
+
 test("ttsr_trigger is accepted as an alias for condition", () => {
   assert.deepEqual(normalise({ ttsr_trigger: "foo" }).condition, ["foo"]);
 });
