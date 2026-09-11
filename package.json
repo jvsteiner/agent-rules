@@ -1,0 +1,12 @@
+{
+  "name": "agent-rules",
+  "version": "0.1.0",
+  "description": "One set of rule files, read by both omp and Claude Code",
+  "license": "MIT",
+  "author": "Jamie Steiner",
+  "type": "module",
+  "private": true,
+  "scripts": {
+    "test": "node --test test/"
+  }
+}
