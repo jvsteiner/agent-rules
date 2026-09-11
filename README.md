@@ -24,6 +24,7 @@ beyond the files themselves.
 | The ten starter rules | **Written**, each with a firing case and a quiet case |
 | Claude Code plugin and hooks | **Built**, ~29 ms per write |
 | Installer | Not built — one symlink, see below |
+| Live test harness | **Built** — `live-test/` |
 
 56 tests.
 
@@ -31,8 +32,12 @@ The design is [`docs/2026-09-11-agent-rules-design.md`](docs/2026-09-11-agent-ru
 
 ```sh
 npm test                                  # 56 tests
+node tools/smoke.mjs                      # is the hook wired up?
 node tools/dryrun.mjs ~/Code/some-repo    # what would the rules fire on?
 ```
+
+[`live-test/`](live-test/README.md) is a clean sample project and a cut sheet —
+one row per rule, what to say to the agent, and what should happen.
 
 No dependencies, no build step. Node 20 or newer.
 
