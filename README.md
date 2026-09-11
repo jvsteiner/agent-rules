@@ -43,10 +43,19 @@ No dependencies, no build step. Node 20 or newer.
 
 ## Install
 
-Point omp at the rules — one symlink, and omp needs nothing else:
+One symlink, into the **global** rule directory — the one omp's own menu calls
+*"Global — all projects"*. Rules then apply in every repository on the machine,
+and nothing is written into any repository:
 
 ```sh
 ln -s ~/Code/agent-rules/rules ~/.omp/agent/rules
+```
+
+If that path already exists as a real directory, `ln -s` will nest the link
+inside it. Check first:
+
+```sh
+ls -ld ~/.omp/agent/rules      # expect: No such file or directory
 ```
 
 Then add the Claude Code plugin from the checkout:

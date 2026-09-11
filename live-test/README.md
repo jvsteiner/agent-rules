@@ -17,11 +17,18 @@ live-test/
 
 ## 0. Turn it on
 
-One symlink for omp:
+One symlink, into omp's **global** rule directory — the level omp's own menu
+calls *"Global — all projects"*. That makes the rules apply in every repository
+on the machine. Nothing is written into any repository.
 
 ```sh
+ls -ld ~/.omp/agent/rules                              # expect: No such file
 ln -s ~/Code/agent-rules/rules ~/.omp/agent/rules
 ```
+
+(The other level, `<repo>/.omp/rules`, is for a rule that should apply to one
+repository only. You write those by hand when you want one. Both agents read
+both directories, and a project rule replaces a global one of the same name.)
 
 Then, in a Claude Code terminal:
 
