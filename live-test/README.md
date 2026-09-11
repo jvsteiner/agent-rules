@@ -43,14 +43,20 @@ Then, in a Claude Code terminal:
 
 ## 1. Smoke test — 30 seconds, no agent needed
 
-Does the hook work at all? Run this from the repository root:
+Does the hook work at all? This works from any directory, including this one:
 
 ```sh
-node tools/smoke.mjs
+node ~/Code/agent-rules/tools/smoke.mjs
 ```
 
-You should see the `ts-no-any` rule body printed back. If you see
-`no rules found`, the symlink in step 0 is missing.
+You should see `10 rules loaded` and then the `ts-no-any` rule body printed
+back, ending in `OK`.
+
+It reports on two directories. The **global** one must say `found`. The project
+one, `<cwd>/.omp/rules`, says `missing` unless you have written a rule for that
+one repository — which is normal and fine.
+
+If it says `no rules found`, the symlink in step 0 is missing or nested.
 
 ---
 

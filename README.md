@@ -32,7 +32,7 @@ The design is [`docs/2026-09-11-agent-rules-design.md`](docs/2026-09-11-agent-ru
 
 ```sh
 npm test                                  # 56 tests
-node tools/smoke.mjs                      # is the hook wired up?
+node tools/smoke.mjs                      # is the hook wired up? (works from anywhere)
 node tools/dryrun.mjs ~/Code/some-repo    # what would the rules fire on?
 ```
 
