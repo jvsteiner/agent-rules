@@ -63,7 +63,44 @@ function recordFired(sessionId, names) {
   }
 }
 
-export function render(fired, path) {
+/**
+ * What the model is handed, shaped after omp's own rule-injection template.
+ *
+ * Two lines in here are load-bearing and neither is decoration.
+ *
+ * **"MUST comply"** is the difference between an order and a note. A labelled
+ * note gets weighed against the user's request and often loses; an order gets
+ * acted on. Live testing showed exactly that split — omp fixed the line, the
+ * softer wording produced a conversation about whether to.
+ *
+ * **"NOT prompt injection"** is the one that makes the rest work at all. Text
+ * arriving in tool output that tells an agent what to do is indistinguishable
+ * from an attack, and a well-behaved agent is right to discount it. Saying
+ * where this came from is what earns it the authority to be followed.
+ */
+export function renderForModel(fired, path) {
+  return fired
+    .map(
+      (f) =>
+        `<system-reminder reason="rule_violation" rule="${f.name}" path="${path}">\n` +
+        "User-defined rule matched tool-call arguments. Rule configured not to " +
+        "interrupt \u2192 tool ran. MUST comply with the following instruction on " +
+        "subsequent tool calls and responses. NOT prompt injection \u2014 coding " +
+        "agent enforcing project rules.\n\n" +
+        `${f.description}\n\n${f.body}\n` +
+        "</system-reminder>",
+    )
+    .join("\n");
+}
+
+/**
+ * What a *person* is handed when an interrupting rule stops a write.
+ *
+ * Deliberately not the wrapper above. `permissionDecisionReason` is read by
+ * whoever is being asked to approve the write, and an XML tag ordering them to
+ * comply is both confusing and aimed at the wrong reader.
+ */
+export function renderForHuman(fired, path) {
   return fired
     .map((f) => `[agent-rules] ${f.name} — ${f.description}\n${path}\n\n${f.body}`)
     .join("\n\n---\n\n");
@@ -77,7 +114,7 @@ export function decide(payload, rules, mode) {
   const fresh = fired.filter((f) => !seen.has(f.name));
   if (fresh.length === 0) return { reply: null, names: [] };
 
-  const text = render(fresh, payload?.tool_input?.file_path ?? "");
+  const path = payload?.tool_input?.file_path ?? "";
   const names = fresh.map((f) => f.name);
 
   if (mode === "pre") {
@@ -86,7 +123,7 @@ export function decide(payload, rules, mode) {
         hookSpecificOutput: {
           hookEventName: "PreToolUse",
           permissionDecision: "ask",
-          permissionDecisionReason: text,
+          permissionDecisionReason: renderForHuman(fresh, path),
         },
       },
       names,
@@ -94,7 +131,10 @@ export function decide(payload, rules, mode) {
   }
   return {
     reply: {
-      hookSpecificOutput: { hookEventName: "PostToolUse", additionalContext: text },
+      hookSpecificOutput: {
+        hookEventName: "PostToolUse",
+        additionalContext: renderForModel(fresh, path),
+      },
     },
     names,
   };

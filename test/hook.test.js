@@ -45,6 +45,30 @@ test("a violating write is reported as additionalContext, not a block", () => {
   assert.equal(reply.hookSpecificOutput.permissionDecision, undefined);
 });
 
+test("the model-facing text carries the authority lines", () => {
+  const ctx = JSON.parse(run("post", editing("function f(x: any) {}")).out)
+    .hookSpecificOutput.additionalContext;
+  // Without "MUST comply" the rule is a note that loses to the user's request.
+  assert.match(ctx, /MUST comply/);
+  // Without this, text arriving in tool output that tells an agent what to do
+  // is indistinguishable from an attack, and is rightly discounted.
+  assert.match(ctx, /NOT prompt injection/);
+  assert.match(ctx, /^<system-reminder reason="rule_violation" rule="ts-no-any" path="[^"]+">/m);
+  assert.match(ctx, /<\/system-reminder>$/);
+});
+
+test("what a person is asked to approve is not an XML order", () => {
+  const dir = mkdtempSync(join(tmpdir(), "ar-rules-"));
+  writeFileSync(
+    join(dir, "no-fixme.md"),
+    '---\ndescription: "No FIXME"\ncondition: "FIXME"\ninterruptMode: always\n---\n\nRemove it.\n',
+  );
+  const reason = JSON.parse(run("pre", editing("// FIXME"), { dirs: dir }).out)
+    .hookSpecificOutput.permissionDecisionReason;
+  assert.doesNotMatch(reason, /system-reminder|MUST comply/);
+  assert.match(reason, /\[agent-rules\] no-fixme/);
+});
+
 test("clean code produces no output at all", () => {
   assert.equal(run("post", editing("function f(x: unknown) {}")).out, "");
 });
