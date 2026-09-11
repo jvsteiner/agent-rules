@@ -1,7 +1,7 @@
 # agent-rules — design
 
 > Date: 2026-09-11
-> Status: §1-§8 agreed; §12 steps 1 and 2 done
+> Status: §12 steps 1-3 done. Step 4, the installer, is next.
 > Decisions taken: Node (not Rust); global symlink only; omp's format as-is
 
 One set of rule files. Two readers: **omp** reads them natively, and a **Claude
@@ -130,16 +130,21 @@ that point by a separate small command.
 
 ## 5. The Claude plugin
 
-A standard Claude Code plugin in this same repository. Node, no build step, so
-it installs by clone.
+A standard Claude Code plugin. Node, no build step, so it installs by clone.
+
+**The repository root is the plugin.** Claude Code copies a plugin into
+`~/.claude/plugins/cache/<marketplace>/<plugin>/<version>/`, so anything outside
+the plugin directory is gone at run time. A `plugin/` subdirectory holding only
+the hook would lose `src/` on install. The marketplace entry therefore uses
+`"source": "./"`.
 
 ```
-plugin/
-  .claude-plugin/plugin.json
-  hooks/hooks.json
-  bin/agent-rules-hook.js
-rules/
-  *.md
+.claude-plugin/marketplace.json
+hooks/hooks.json
+bin/agent-rules-hook.js
+src/                  the loader and matcher
+rules/                the rules themselves
+tools/dryrun.mjs      count what a rule would fire on, before shipping it
 ```
 
 `hooks.json` wires two events:

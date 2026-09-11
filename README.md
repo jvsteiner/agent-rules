@@ -20,18 +20,39 @@ beyond the files themselves.
 
 | | |
 |---|---|
-| Rule loader and matcher | **Built**, 46 tests |
+| Rule loader and matcher | **Built** |
 | The ten starter rules | **Written**, each with a firing case and a quiet case |
-| Claude Code plugin and hooks | Not built |
-| Installer | Not built |
+| Claude Code plugin and hooks | **Built**, ~29 ms per write |
+| Installer | Not built — one symlink, see below |
+
+56 tests.
 
 The design is [`docs/2026-09-11-agent-rules-design.md`](docs/2026-09-11-agent-rules-design.md).
 
 ```sh
-npm test
+npm test                                  # 56 tests
+node tools/dryrun.mjs ~/Code/some-repo    # what would the rules fire on?
 ```
 
 No dependencies, no build step. Node 20 or newer.
+
+## Install
+
+Point omp at the rules — one symlink, and omp needs nothing else:
+
+```sh
+ln -s ~/Code/agent-rules/rules ~/.omp/agent/rules
+```
+
+Then add the Claude Code plugin from the checkout:
+
+```
+/plugin marketplace add ~/Code/agent-rules
+/plugin install agent-rules@agent-rules
+```
+
+The plugin reads the same two directories omp does, so both agents behave the
+same way. Until the symlink exists, the hook finds no rules and stays silent.
 
 ---
 

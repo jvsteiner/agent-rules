@@ -1,0 +1,14 @@
+{
+  "name": "agent-rules",
+  "description": "One set of rule files, read by both omp and Claude Code.",
+  "owner": { "name": "Jamie Steiner" },
+  "plugins": [
+    {
+      "name": "agent-rules",
+      "version": "0.1.0",
+      "source": "./",
+      "description": "Tells the agent, in the same turn, when a write breaks a rule. Reads the same rule files omp reads.",
+      "author": { "name": "Jamie Steiner" }
+    }
+  ]
+}
