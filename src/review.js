@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 import { createJevClient } from "./jev.js";
+import { chunkPayload } from "./review-chunks.js";
 
 const hash = (value) => createHash("sha256").update(value).digest("hex");
 const MAX_REVIEW_CHARS = 24000;
@@ -38,6 +39,20 @@ function requiredPresent(snapshot, requires = []) {
     if (key === "constraints") return snapshot.constraints !== undefined && snapshot.constraints !== null;
     return snapshot[key] !== undefined && snapshot[key] !== null;
   });
+}
+
+function missingEvidence(snapshot, requires = []) {
+  return requires.filter((key) => !requiredPresent(snapshot, [key]));
+}
+
+function coverageAffects(snapshot, policy) {
+  const sources = snapshot.coverage?.truncatedSources ?? [];
+  if (!sources.length) return snapshot.coverage?.complete === false;
+  const required = new Set(policy.requires ?? []);
+  if (policy.target.startsWith("response")) required.add("response");
+  if (policy.target.startsWith("thinking")) required.add("thinking");
+  if (policy.target === "code_change") required.add("changes");
+  return sources.some((source) => source === "unknown" || source === "request" && required.has("request") || source === "response" && required.has("response") || source.startsWith("receipt:") && (required.has("receipts") || required.has("tool_calls")) || source.startsWith("change:") && ["changes", "code", "diff"].some((x) => required.has(x)) || source.startsWith("thinking:") && required.has("thinking"));
 }
 
 function classify(answer, policy) {
@@ -90,6 +105,18 @@ function classify(answer, policy) {
   return "unknown";
 }
 
+function uncertainDiagnostic(answer, policy) {
+  const q = policy.detector?.question ?? {};
+  const d = policy.detector?.decision ?? {};
+  if (q.type === "choice") {
+    if ((d.unknown_options ?? []).includes(answer?.choice)) return { code: "unknown_choice", message: `The classifier selected the policy's inconclusive option (${answer.choice}).`, decision: d };
+    return { code: "below_threshold", message: "The winning classification did not meet the policy's confidence threshold.", decision: d };
+  }
+  if (q.type === "noul") return { code: "between_thresholds", message: "The score fell between the policy's clear and violation thresholds.", decision: d };
+  if (q.type === "score") return { code: "below_threshold", message: "Neither the clear nor violation score mass met the policy's confidence threshold.", decision: d };
+  return { code: "inconclusive", message: "The classification did not support a clear or violation finding.", decision: d };
+}
+
 function sourceEvidence(snapshot, policy, candidate) {
   const out = [{ id: candidate.id, text: redact(candidate.text) }];
   if (policy.requires?.includes("request") && snapshot.request) out.push({ id: "request", text: redact(snapshot.request) });
@@ -106,7 +133,7 @@ function sourceEvidence(snapshot, policy, candidate) {
   return out;
 }
 
-export function createReviewer({ client = createJevClient(), model = "jev-1.13.0", deadlineMs = 2000 } = {}) {
+export function createReviewer({ client = createJevClient(), model = "jev-1.13.0", deadlineMs = 2000, maxReviewRequests = 4 } = {}) {
   return {
     async review(snapshot, policies, { signal } = {}) {
       const started = Date.now();
@@ -115,8 +142,12 @@ export function createReviewer({ client = createJevClient(), model = "jev-1.13.0
       for (const policy of policies ?? []) {
         if (policy.events?.length && !policy.events.includes(snapshot.eventKind)) continue;
         const candidates = spans(snapshot, policy.target);
-        if (!requiredPresent(snapshot, policy.requires) || candidates.length === 0) {
-          findings.push({ id: hash(`${policy.id}|unknown`).slice(0, 20), ruleId: policy.id, status: "unknown", evidence: [], judgment: null, policyHash: policy.hash, correction: policy.correction, description: policy.description, priority: policy.priority, mode: policy.mode });
+        if (missingEvidence(snapshot, policy.requires).length || candidates.length === 0) {
+          const missing = missingEvidence(snapshot, policy.requires);
+          const diagnostic = missing.length
+            ? { code: "missing_evidence", message: `Required evidence is missing or incomplete: ${missing.join(", ")}.`, missingEvidence: missing }
+            : { code: "no_candidate", message: `No non-empty text was available for target ${policy.target}.` };
+          findings.push({ id: hash(`${policy.id}|unknown`).slice(0, 20), ruleId: policy.id, status: "unknown", diagnostic, evidence: [], judgment: null, policyHash: policy.hash, correction: policy.correction, description: policy.description, priority: policy.priority, mode: policy.mode });
           continue;
         }
         if (policy.detector?.type === "regex") {
@@ -139,53 +170,123 @@ export function createReviewer({ client = createJevClient(), model = "jev-1.13.0
         }
         for (const candidate of candidates) tasks.push({ policy, candidate });
       }
-      let answers = {}, usage, actualModel, requestUnavailable = false;
+      let answers = {}, usage, actualModel, requestUnavailable = false, transportDiagnostic;
+      const omittedTaskIndexes = new Set();
+      const chunkJudgments = new Map();
+      const expectedChunks = new Map();
+      const taskFailures = new Map();
       if (tasks.length) {
         const controller = new AbortController();
         const abort = () => controller.abort(signal?.reason);
         if (signal?.aborted) abort(); else signal?.addEventListener("abort", abort, { once: true });
-        let timer;
+        let timer, deadlineExpired = false;
         try {
-          const timeout = new Promise((_, reject) => { timer = setTimeout(() => { controller.abort(); reject(new Error("review deadline exceeded")); }, deadlineMs); });
-          const required = new Set(tasks.flatMap(({ policy }) => policy.requires ?? []));
-          const state = {
-            ...(required.has("request") ? { request: redact(snapshot.request) } : {}),
-            ...(required.has("response") || tasks.some(({ policy }) => policy.target.startsWith("response")) ? { response: redact(snapshot.response) } : {}),
-            ...(required.has("receipts") || required.has("tool_calls") ? { receipts: (snapshot.receipts ?? []).map((r) => ({ id: r.id, tool: r.tool ?? r.name, input: redactAny(r.input), result: redactAny(r.result), status: r.status })) } : {}),
-            ...(required.has("changes") || required.has("code") || required.has("diff") ? { changes: (snapshot.changes ?? []).map((c) => ({ path: redact(c.path), text: redact(c.text), context: redact(c.context) })) } : {}),
-            ...(required.has("thinking") ? { thinking: (snapshot.thinking ?? []).filter((t) => t.completeness === "complete_segment").map((t) => ({ id: t.id, text: redact(t.text), kind: t.kind, completeness: t.completeness })) } : {}),
-            ...(required.has("constraints") ? { constraints: redactAny(snapshot.constraints) } : {}),
-            ...(Object.keys(snapshot.coverage ?? {}).length ? { coverage: redactAny(snapshot.coverage) } : {}),
-            candidates: tasks.map(({ policy, candidate }) => ({ id: candidate.id, text: redact(candidate.text), context: redact(candidate.context), rule: policy.id })),
+          const timeout = new Promise((_, reject) => { timer = setTimeout(() => { deadlineExpired = true; controller.abort(); reject(new Error("review deadline exceeded")); }, deadlineMs); });
+          const buildPayload = (selected) => {
+            const required = new Set(selected.flatMap(({ policy }) => policy.requires ?? []));
+            const state = {
+              ...(required.has("request") ? { request: redact(snapshot.request) } : {}),
+              ...(required.has("response") || selected.some(({ policy }) => policy.target.startsWith("response")) ? { response: redact(snapshot.response) } : {}),
+              ...(required.has("receipts") || required.has("tool_calls") ? { receipts: (snapshot.receipts ?? []).map((r) => ({ id: r.id, tool: r.tool ?? r.name, input: redactAny(r.input), result: redactAny(r.result), status: r.status })) } : {}),
+              ...(["changes", "code", "diff"].some((k) => required.has(k)) ? { changes: (snapshot.changes ?? []).map((c) => ({ path: redact(c.path), text: redact(c.text), context: redact(c.context) })) } : {}),
+              ...(required.has("thinking") ? { thinking: (snapshot.thinking ?? []).filter((t) => t.completeness === "complete_segment").map((t) => ({ id: t.id, text: redact(t.text), kind: t.kind, completeness: t.completeness })) } : {}),
+              ...(required.has("constraints") ? { constraints: redactAny(snapshot.constraints) } : {}),
+              ...(Object.keys(snapshot.coverage ?? {}).length ? { coverage: redactAny(snapshot.coverage) } : {}),
+              candidates: selected.map(({ policy, candidate }) => ({ id: candidate.id, text: redact(candidate.text), context: redact(candidate.context), rule: policy.id })),
+            };
+            const questions = Object.fromEntries(selected.map(({ policy }, i) => {
+              const question = policy.detector.question;
+              const reference = `state.candidates[${i}]`;
+              const instructions = typeof question.instructions === "string"
+                ? question.instructions.replaceAll("state.candidates[index]", reference).includes(reference)
+                  ? question.instructions.replaceAll("state.candidates[index]", reference)
+                  : `${question.instructions}\nFor this question, evaluate only ${reference}.`
+                : { ...question.instructions, candidate_index_to_evaluate: i };
+              return [`q${i}`, { ...question, instructions }];
+            }));
+            return { state, questions };
           };
-          const questions = Object.fromEntries(tasks.map(({ policy, candidate }, i) => {
-            const question = policy.detector.question;
-            const reference = `state.candidates[${i}]`;
-            const instructions = typeof question.instructions === "string"
-              ? question.instructions.replaceAll("state.candidates[index]", reference).includes(reference)
-                ? question.instructions.replaceAll("state.candidates[index]", reference)
-                : `${question.instructions}\nFor this question, evaluate only ${reference}.`
-              : { ...question.instructions, candidate_index_to_evaluate: i };
-            return [`q${i}`, { ...question, instructions }];
-          }));
-          if (JSON.stringify({ state, questions, model }).length > MAX_REVIEW_CHARS) {
-            requestUnavailable = false;
-            answers = Object.fromEntries(tasks.map((_, i) => [`q${i}`, { type: "budget_exceeded" }]));
-          } else {
-          const response = await Promise.race([client.evaluate({ state, questions, model, signal: controller.signal }), timeout]);
-          answers = response?.answers ?? {}; usage = response?.usage; actualModel = response?.model;
+          const selected = [];
+          const oversized = [];
+          for (let taskIndex = 0; taskIndex < tasks.length; taskIndex++) {
+            const trial = [...selected, tasks[taskIndex]];
+            const { state, questions } = buildPayload(trial);
+            if (JSON.stringify({ state, questions, model }).length <= MAX_REVIEW_CHARS) selected.push(tasks[taskIndex]);
+            else oversized.push(taskIndex);
           }
-        } catch { answers = {}; requestUnavailable = true; }
+          const requests = [];
+          if (selected.length) requests.push({ tasks: selected, ...buildPayload(selected), chunkInfo: null });
+          for (const taskIndex of oversized) {
+            if (requests.length >= maxReviewRequests) { omittedTaskIndexes.add(taskIndex); continue; }
+            const built = buildPayload([tasks[taskIndex]]);
+            const remaining = maxReviewRequests - requests.length;
+            const pieces = chunkPayload({ state: built.state, questions: built.questions, model }, { maxChars: MAX_REVIEW_CHARS - 512, maxChunks: remaining });
+            if (!pieces.length) { omittedTaskIndexes.add(taskIndex); continue; }
+            expectedChunks.set(taskIndex, pieces.length);
+            pieces.forEach((piece) => requests.push({ tasks: [tasks[taskIndex]], ...piece.payload, chunkInfo: piece.coverage }));
+          }
+          let nextRequest = 0;
+          const worker = async () => {
+            while (nextRequest < requests.length && !controller.signal.aborted) {
+              const request = requests[nextRequest++];
+              try {
+                const response = await Promise.race([client.evaluate({ state: request.state, questions: request.questions, model, signal: controller.signal }), timeout]);
+                const reqUsage = response?.usage ?? {};
+                usage ??= {};
+                for (const [key, value] of Object.entries(reqUsage)) if (typeof value === "number") usage[key] = (usage[key] ?? 0) + value;
+                actualModel = response?.model ?? actualModel;
+                for (let i = 0; i < request.tasks.length; i++) {
+                  const task = request.tasks[i];
+                  const taskIndex = tasks.indexOf(task);
+                  const answer = response?.answers?.[`q${i}`];
+                  if (request.chunkInfo) {
+                    const existing = chunkJudgments.get(taskIndex) ?? [];
+                    existing.push({ answer, coverage: request.chunkInfo });
+                    chunkJudgments.set(taskIndex, existing);
+                  } else answers[`q${taskIndex}`] = answer;
+                }
+              } catch (error) {
+                if (deadlineExpired || controller.signal.aborted) throw error;
+                for (const task of request.tasks) taskFailures.set(tasks.indexOf(task), { code: "transport_failure", message: "The classifier request could not be completed." });
+              }
+            }
+          };
+          await Promise.allSettled([worker(), worker()]);
+          if (deadlineExpired) {
+            requestUnavailable = true;
+            transportDiagnostic = { code: "deadline_exceeded", message: "The classifier did not respond before the review deadline." };
+          }
+        } catch (error) { requestUnavailable = true; transportDiagnostic = error?.message === "review deadline exceeded"
+          ? { code: "deadline_exceeded", message: "The classifier did not respond before the review deadline." }
+          : { code: "transport_failure", message: "The classifier request could not be completed." }; }
         finally { clearTimeout(timer); signal?.removeEventListener("abort", abort); }
+      }
+      for (const [taskIndex, chunks] of chunkJudgments) {
+        const statuses = chunks.map(({ answer }) => classify(answer, tasks[taskIndex].policy));
+        const complete = chunks.length === expectedChunks.get(taskIndex) && chunks.every(({ answer }) => answer);
+        const status = complete && statuses.every((s) => s === "clear") ? "clear"
+          : complete && statuses.every((s) => s === "violation") ? "violation" : "unknown";
+        answers[`q${taskIndex}`] = { type: "chunk_aggregate", status, complete, chunks: chunks.map(({ answer, coverage }) => ({ answer, coverage })) };
       }
       tasks.forEach(({ policy, candidate }, i) => {
         const key = `q${i}`;
         const answer = answers[key];
-        const overBudget = answer?.type === "budget_exceeded";
-        const status = requestUnavailable ? "unavailable" : overBudget ? "unknown" : classify(answer, policy);
+        const overBudget = (omittedTaskIndexes.has(i) && !chunkJudgments.has(i)) || answer?.type === "budget_exceeded";
+        const incompleteSnapshot = coverageAffects(snapshot, policy);
+        const status = overBudget ? "unknown" : incompleteSnapshot ? "unknown" : answer?.type === "chunk_aggregate" ? answer.status : requestUnavailable && !answer ? "unavailable" : !answer ? "unavailable" : classify(answer, policy);
         const evidence = sourceEvidence(snapshot, policy, candidate);
         const shownEvidence = overBudget ? evidence.map(({ id }) => ({ id, text: "[omitted: review evidence exceeded the character budget]" })) : evidence;
-        findings.push({ id: hash(`${policy.id}|${policy.hash ?? ""}|${JSON.stringify(evidence)}`).slice(0, 20), ruleId: policy.id, status, evidence: shownEvidence, judgment: overBudget ? { reason: "evidence_budget_exceeded", truncated: true, limitChars: MAX_REVIEW_CHARS } : answer ?? null, policyHash: policy.hash, correction: policy.correction, description: policy.description, priority: policy.priority, mode: policy.mode });
+        const diagnostic = overBudget ? { code: "input_budget_exceeded", message: `This policy's evidence exceeded the ${MAX_REVIEW_CHARS}-character request limit; it was omitted from the classifier call.` }
+          : incompleteSnapshot ? { code: "partial_review", message: "The snapshot reports truncated source evidence; the review cannot support a complete finding.", truncatedSources: snapshot.coverage.truncatedSources ?? [] }
+          : answer?.type === "chunk_aggregate" && !answer.complete ? { code: "partial_review", message: "Not all evidence chunks received a complete judgment." }
+          : answer?.type === "chunk_aggregate" && status === "unknown" ? { code: "chunk_conflict", message: "Evidence chunks produced mixed or inconclusive judgments." }
+          : taskFailures.has(i) ? taskFailures.get(i)
+          : requestUnavailable && !answer ? transportDiagnostic
+          : !answer ? { code: "missing_answer", message: "The classifier returned no answer for this policy." }
+          : status === "unavailable" ? { code: "malformed_answer", message: "The classifier answer did not match the policy's declared question format." }
+          : status === "unknown" ? answer?.type === "chunk_aggregate" ? { code: "chunk_conflict", message: "Evidence chunks produced mixed or inconclusive judgments." } : uncertainDiagnostic(answer, policy)
+          : { code: status, message: status === "clear" ? "The classification met the policy's clear threshold." : "The classification met the policy's violation threshold.", decision: policy.detector.decision };
+        findings.push({ id: hash(`${policy.id}|${policy.hash ?? ""}|${JSON.stringify(evidence)}`).slice(0, 20), ruleId: policy.id, status, diagnostic, evidence: shownEvidence, judgment: overBudget ? { reason: "evidence_budget_exceeded", truncated: true, limitChars: MAX_REVIEW_CHARS } : answer ?? null, policyHash: policy.hash, correction: policy.correction, description: policy.description, priority: policy.priority, mode: policy.mode });
       });
       return { findings, usage, model: actualModel ?? model, elapsedMs: Date.now() - started };
     },

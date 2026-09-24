@@ -41,7 +41,7 @@ async function main(){
   const result=await policiesAt(args[0]??join(root,'policies'));
   if(result.diagnostics.length)throw new Error('Policy validation failed; run validate for diagnostics.');
   const cases=(await readFile(resolve(fixtures),'utf8')).split('\n').filter(l=>l.trim()).map(JSON.parse);
-  const reviewer=live?createReviewer({client:createJevClient(),model:config.model,deadlineMs:Math.max(config.reviewDeadlineMs,10000)}):undefined;
+  const reviewer=live?createReviewer({client:createJevClient(),model:config.model,deadlineMs:Math.max(config.reviewDeadlineMs,10000),maxReviewRequests:config.maxReviewRequests}):undefined;
   const report=await evaluateCases({policies:result.policies,cases,model:config.model,reviewer,replay:replayFile?await readJSON(replayFile):undefined});
   if(out){await mkdir(dirname(resolve(out)),{recursive:true});await writeFile(out,JSON.stringify(report,null,2)+'\n',{mode:0o600});}
   output(report);if(report.summary.failed)process.exitCode=1;return;
@@ -56,13 +56,18 @@ async function main(){
   await writeFile(temp,JSON.stringify(data,null,2)+'\n',{mode:0o600});await rename(temp,path);output({id,mode,path});return;
  }
  if(command==='inspect'){
-  const findings=[];let files=[];try{files=await readdir(config.stateDir);}catch(e){if(e.code!=='ENOENT')throw e;}
-  for(const file of files.filter(f=>f.endsWith('.json'))){try{const state=await readJSON(join(config.stateDir,file));for(const f of Object.values(state.findings??{}))if(!args[0]||f.id===args[0]||f.ruleId===args[0])findings.push(f);}catch{}}
-  output({findings});return;
+  const session=option('--session');const selector=args[0];const findings=[];const records=[];let files=[];try{files=await readdir(config.stateDir);}catch(e){if(e.code!=='ENOENT')throw e;}
+  for(const file of files.filter(f=>f.endsWith('.json'))){try{
+   const state=await readJSON(join(config.stateDir,file));if(session&&state.sessionId!==session)continue;
+   for(const f of Object.values(state.findings??{}))if(!selector||f.id===selector||f.ruleId===selector)findings.push({...f,source:'current',episodeId:state.episodeId,sessionId:state.sessionId});
+   for(const record of state.history??[]){const matched=(record.findings??[]).filter(f=>!selector||f.id===selector||f.ruleId===selector);if(matched.length||(!selector&&!(record.findings??[]).length))records.push({...record,sessionId:state.sessionId,findings:matched});}
+  }catch{}}
+  records.sort((a,b)=>(a.timestamp??'').localeCompare(b.timestamp??'')||a.sequence-b.sequence);
+  output({session:session??null,findings,records});return;
  }
  if(command==='status'){
   const result=await loadPolicies({directories:[join(root,'policies'),...config.policyDirectories],modes:config.rules});
-  output({version:'0.2.0',credentials:{typesafe:!!process.env.TYPESAFE_API_KEY},model:config.model,stateDir:config.stateDir,reviewDeadlineMs:config.reviewDeadlineMs,maxCorrectionsPerEpisode:config.maxCorrectionsPerEpisode,policies:result.policies.map(p=>({id:p.id,mode:p.mode,hash:p.hash})),diagnostics:[...diagnostics,...result.diagnostics],capabilities:{claudeStop:'verified',codexStop:'verified',claudeHeadlessNotices:'verified',codexHeadlessNotices:'not emitted by exec --json; inspect journal',thinking:'conditional; ordinary Stop payloads do not expose thinking',hookInstallation:'not inferred; verify host hook/trust configuration'}});return;
+  output({version:'0.2.0',credentials:{typesafe:!!process.env.TYPESAFE_API_KEY},model:config.model,stateDir:config.stateDir,journalStorage:'per-session JSON snapshots with bounded review history',reviewDeadlineMs:config.reviewDeadlineMs,maxCorrectionsPerEpisode:config.maxCorrectionsPerEpisode,maxReviewRequests:config.maxReviewRequests,policies:result.policies.map(p=>({id:p.id,mode:p.mode,hash:p.hash})),diagnostics:[...diagnostics,...result.diagnostics],capabilities:{claudeStop:'verified',codexStop:'verified',claudeHeadlessNotices:'verified',codexHeadlessNotices:'not emitted by exec --json; inspect journal',thinking:'conditional; ordinary Stop payloads do not expose thinking',hookInstallation:'not inferred; verify host hook/trust configuration'}});return;
  }
  throw new Error('Commands: validate, evaluate, compare, inspect, status, set-mode. Use --env-file explicitly for local development credentials.');
 }

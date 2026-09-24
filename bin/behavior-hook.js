@@ -19,7 +19,7 @@ async function main(){
  const {config,diagnostics}=await loadConfig({projectRoot:payload.cwd??process.cwd()});
  if(event.kind==='session_start')await maintainJournal(config.stateDir);
  const loaded=await loadPolicies({directories:[join(root,'policies'),...config.policyDirectories],modes:config.rules});
- const reviewer=createReviewer({client:createJevClient(),model:config.model,deadlineMs:config.reviewDeadlineMs});
+ const reviewer=createReviewer({client:createJevClient(),model:config.model,deadlineMs:config.reviewDeadlineMs,maxReviewRequests:config.maxReviewRequests});
  let effect=await handleEvent(event,{reviewer,policies:loaded.policies,stateDir:config.stateDir,config});
  // Preserve existing deterministic checks separately from semantic correction accounting.
  if(['tool_start','tool_result'].includes(event.kind)&&event.changes?.length&&process.env.AGENT_RULES_LEGACY!=='0'){

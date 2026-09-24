@@ -53,6 +53,7 @@ Configuration lives in `~/.config/agent-rules/config.json` or project
   "schema": "agent-rules/config-v1",
   "model": "jev-1.13.0",
   "reviewDeadlineMs": 2000,
+  "maxReviewRequests": 4,
   "maxCorrectionsPerEpisode": 2,
   "rules": {
     "reporting.test-result-contradiction": "repair",
@@ -82,6 +83,46 @@ Offline evaluation requires a matching replay and never silently calls Jev.
 Reports bind results to model, policy hash, and evidence; mismatches with fixture
 labels produce a nonzero exit, including unexpected abstentions.
 See the [policy format](skills/author-rule/references/policy-format.md).
+
+### Explain a check
+
+Ask the agent to use the **diagnose-rule** skill, or inspect the record directly:
+
+```sh
+node dist/agent-rules.js inspect communication.cat-pictures
+```
+
+Inspect the recorded judgment before replaying a response. A replay is a new model
+evaluation and cannot establish what happened in the original session. `unknown`
+means the check abstained; it is not a detected violation. Diagnostics distinguish
+missing evidence, an input budget limit, uncertain judgments, and unavailable
+evaluation. A large evidence requirement in one rule no longer skips unrelated
+small rules in the same review.
+
+Oversized evidence is reviewed in chunks within `maxReviewRequests` (default 4,
+maximum 8) and one shared review deadline. Each request stays within the plugin's
+24,000-character budget. Small checks retain the normal shared batch; additional
+requests cover overflow. Chunk results and coverage are inspectable. Conflicting
+results, missing chunks, or capture truncation cannot be reported as a clean bill
+of health. Generic aggregation is conservative: all chunks must agree for a clear
+or violation outcome; otherwise the result is inconclusive. Probabilities are not
+averaged across chunks.
+
+Chunking supports long responses, tool input/output, changed text, and exposed
+thinking text. It retains source metadata and short context, with 256-character
+overlaps. Oversized fixed instructions/context or an input requiring more chunks
+than the call budget remain explicitly inconclusive. This is bounded review, not
+an unlimited-context guarantee.
+
+The character budget is our operating limit, not Jev's context limit. TypeSafe's
+[model documentation](https://docs.typesafe.ai/models) currently specifies 64k
+tokens per request and 32k for state plus the longest question. Chunking keeps
+individual calls smaller without treating omitted material as reviewed.
+
+Session journals are the JSON files in the state directory reported by `status`,
+not a separate file named `journal`. Bounded review history survives a new user
+prompt and includes the review's episode and outcome. Results already erased by
+older versions cannot be recovered from the journal.
 
 ## Verification and actual limits
 

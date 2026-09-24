@@ -25,6 +25,41 @@ test("genuine user prompt starts an episode; continuation does not reset the cap
   assert.equal((await handleEvent(event("response_end", { response: "bad again" }), { ...ctx, reviewer })).action, "continue_turn");
 });
 
+test("review snapshots preserve long responses and receipts and mark incomplete capture", async () => {
+  const ctx = await make(); const response = "r".repeat(18000), receiptText = "x".repeat(22000); let snapshot;
+  const reviewer = { review: async (value) => { snapshot = value; return { findings: [] }; } };
+  await handleEvent(event("user_prompt", { source: "host_user", userText: "task" }), ctx);
+  await handleEvent(event("tool_result", { tool: { id: "one", name: "shell", input: {}, result: receiptText, status: "completed" }, response }), { ...ctx, reviewer });
+  assert.equal(snapshot.response.length, response.length);
+  assert.equal(snapshot.receipts[0].result.length, receiptText.length);
+  assert.equal(snapshot.coverage.complete, true);
+
+  const extreme = { review: async (value) => { snapshot = value; return { findings: [] }; } };
+  for (let i = 0; i < 7; i++) {
+    await handleEvent(event("tool_result", { tool: { id: `large-${i}`, name: "shell", input: {}, result: "z".repeat(90000), status: "completed" } }), { ...ctx, reviewer: extreme });
+  }
+  assert.equal(snapshot.coverage.complete, false);
+  assert.ok(snapshot.coverage.truncatedSources.length > 0);
+  assert.ok(JSON.stringify(snapshot).length < 600000);
+});
+
+test("thinking truncation and rolling receipt eviction are reported as incomplete coverage", async () => {
+  const ctx = await make(); let snapshot;
+  const reviewer = { review: async (value) => { snapshot = value; return { findings: [] }; } };
+  await handleEvent(event("user_prompt", { source: "host_user", userText: "task" }), ctx);
+  await handleEvent(event("response_end", { thinking: [
+    { id: "thought-1", text: "t".repeat(15000) }, { id: "thought-2", text: "t".repeat(100000) },
+  ] }), { ...ctx, reviewer });
+  assert.equal(snapshot.coverage.complete, false);
+  assert.equal(snapshot.thinking[0].text.length, 15000);
+  assert.ok(snapshot.coverage.truncatedSources.includes("thinking:thought-2"));
+  for (let i = 0; i < 81; i++) {
+    await handleEvent(event("tool_result", { tool: { id: `receipt-${i}`, name: "shell", input: {}, result: `result-${i}`, status: "completed" } }), { ...ctx, reviewer });
+  }
+  assert.equal(snapshot.coverage.complete, false);
+  assert.ok(snapshot.coverage.truncatedSources.includes("receipt:receipt-0"));
+});
+
 test("unchanged evidence is quiet and updated evidence can use only the remaining cap", async () => {
   const ctx = await make(); let f = finding("f", "same"); const reviewer = { review: async () => ({ findings: [f] }) };
   await handleEvent(event("user_prompt", { source: "host_user", userText: "task" }), ctx);
@@ -223,4 +258,56 @@ test("finding inspection metadata is retained, history is bounded, and correctio
   assert.equal(Object.keys(state.findings).length, 80);
   assert.deepEqual(state.findings[Object.keys(state.findings).find((k) => state.findings[k].ruleId === "rule-89")].judgment, { choice: "bad" });
   assert.equal(state.findings[Object.keys(state.findings).find((k) => state.findings[k].ruleId === "rule-89")].policyHash, "hash-89");
+});
+
+test("completed review history survives new episodes and records correction and clear outcomes", async () => {
+  const ctx = await make(); let findings = [finding("f", "quoted cat-picture text")];
+  const reviewer = { review: async () => ({ findings }) };
+  await handleEvent(event("user_prompt", { source: "host_user", userText: "first" }), ctx);
+  const correction = await handleEvent(event("response_end", { response: "bad" }), { ...ctx, reviewer });
+  assert.equal(correction.action, "continue_turn");
+  await handleEvent(event("user_prompt", { source: "host_user", userText: "second" }), ctx);
+  findings = [{ id: "clear", ruleId: "rule", status: "clear", evidence: "checked" }];
+  await handleEvent(event("response_end", { response: "good" }), { ...ctx, reviewer });
+  const file = join(ctx.stateDir, (await readdir(ctx.stateDir)).find((x) => x.endsWith(".json")));
+  const state = JSON.parse(await readFile(file, "utf8"));
+  assert.equal(state.episodeId, 2);
+  assert.equal(state.history.length, 2);
+  assert.equal(state.history[0].episodeId, 1);
+  assert.equal(state.history[0].outcome.action, "continue_turn");
+  assert.match(state.history[0].outcome.correction, /Correct it|correct it/);
+  assert.equal(state.history[0].findings[0].status, "finding");
+  assert.equal(state.history[1].episodeId, 2);
+  assert.equal(state.history[1].outcome.action, "none");
+});
+
+test("unknown finding diagnostic is named in the notice and audit record", async () => {
+  const ctx = await make(); const reviewer = reviewerWith([{ id: "u", ruleId: "specific.rule", status: "unknown",
+    diagnostic: { code: "missing_evidence", message: "A completed tool receipt is required.", missingEvidence: ["receipts"] } }]);
+  await handleEvent(event("user_prompt", { source: "host_user", userText: "task" }), ctx);
+  const result = await handleEvent(event("response_end"), { ...ctx, reviewer });
+  assert.match(result.notice, /specific\.rule/);
+  assert.match(result.notice, /completed tool receipt/);
+  const file = join(ctx.stateDir, (await readdir(ctx.stateDir)).find((x) => x.endsWith(".json")));
+  const state = JSON.parse(await readFile(file, "utf8"));
+  assert.equal(state.history[0].findings[0].diagnostic.code, "missing_evidence");
+});
+
+test("legacy findings migrate before episode reset and review history remains bounded", async () => {
+  const ctx = await make(); let index = 0;
+  const reviewer = { review: async () => ({ findings: [{ id: `clear-${index}`, ruleId: "rule", status: "clear",
+    evidence: `review-${index++}`, judgment: { choice: "clear" } }] }) };
+  await handleEvent(event("user_prompt", { source: "host_user", userText: "legacy episode" }), ctx);
+  await handleEvent(event("response_end"), { ...ctx, reviewer });
+  const file = join(ctx.stateDir, (await readdir(ctx.stateDir)).find((x) => x.endsWith(".json")));
+  let state = JSON.parse(await readFile(file, "utf8"));
+  state.history = []; await (await import("node:fs/promises")).writeFile(file, JSON.stringify(state));
+  await handleEvent(event("user_prompt", { source: "host_user", userText: "next episode" }), ctx);
+  state = JSON.parse(await readFile(file, "utf8"));
+  assert.equal(state.history[0].episodeId, 1);
+  assert.equal(state.history[0].outcome.legacy, true);
+  for (let i = 0; i < 45; i++) await handleEvent(event("response_end"), { ...ctx, reviewer });
+  state = JSON.parse(await readFile(file, "utf8"));
+  assert.equal(state.history.length, 40);
+  assert.ok(Buffer.byteLength(JSON.stringify(state.history)) <= 1024 * 1024);
 });

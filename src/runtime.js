@@ -3,25 +3,62 @@ import { mkdir, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 
 const MAX_TEXT = 12000;
+const MAX_CAPTURE_TEXT = 96000;
+const MAX_REVIEW_CAPTURE = 512000;
 const MAX_ITEMS = 80;
-const secretScrub = (s) => String(s ?? "").slice(0, MAX_TEXT)
-  .replace(/\b(?:sk-[A-Za-z0-9_-]{12,}|gh[pousr]_[A-Za-z0-9_]{20,}|Bearer\s+[A-Za-z0-9._~-]{12,})\b/g, "[REDACTED]");
-const scrubEvidence = (e) => Array.isArray(e) ? e.map(scrubEvidence) : e && typeof e === "object"
-  ? Object.fromEntries(Object.entries(e).map(([k, v]) => [k, scrubEvidence(v)]))
-  : typeof e === "string" ? secretScrub(e) : e;
+const MAX_HISTORY = 40;
+const MAX_HISTORY_BYTES = 1024 * 1024;
+const scrubText = (s, limit = MAX_TEXT) => String(s ?? "")
+  .replace(/\b(?:sk-[A-Za-z0-9_-]{12,}|gh[pousr]_[A-Za-z0-9_]{20,}|Bearer\s+[A-Za-z0-9._~-]{12,})\b/g, "[REDACTED]").slice(0, limit);
+const secretScrub = (s) => scrubText(s, MAX_TEXT);
+const scrubEvidence = (e, limit = MAX_CAPTURE_TEXT) => Array.isArray(e) ? e.map((x) => scrubEvidence(x, limit)) : e && typeof e === "object"
+  ? Object.fromEntries(Object.entries(e).map(([k, v]) => [k, scrubEvidence(v, limit)]))
+  : typeof e === "string" ? scrubText(e, limit) : e;
+const captureText = (s) => {
+  const scrubbed = scrubText(s, Number.MAX_SAFE_INTEGER);
+  return { text: scrubbed.slice(0, MAX_CAPTURE_TEXT), truncated: scrubbed.length > MAX_CAPTURE_TEXT };
+};
 const shownEvidence = (e) => Array.isArray(e) ? e.map(shownEvidence).join("\n")
   : e && typeof e === "object" ? JSON.stringify(e) : e;
 const hash = (v) => createHash("sha256").update(JSON.stringify(v)).digest("hex");
 const empty = () => ({ version: 1, episodeId: 0, generation: 0, correctionsDelivered: 0,
   pendingContinuation: false, pendingContinuationText: "", originatingUserEvent: null, currentRequest: "", receipts: [], changes: [],
-  thinking: [], response: "", findings: {}, sequence: 0, recoveryRequired: false });
+  thinking: [], response: "", findings: {}, history: [], sequence: 0, recoveryRequired: false });
 const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
 function normalizeFinding(f) {
   return { id: f.id ?? hash([f.ruleId, f.description, f.evidence]), ruleId: f.ruleId,
     status: f.status, description: secretScrub(f.description), correction: secretScrub(f.correction),
-    evidence: scrubEvidence(f.evidence), judgment: f.judgment, policyHash: f.policyHash,
+    evidence: scrubEvidence(f.evidence), judgment: scrubEvidence(f.judgment), diagnostic: scrubEvidence(f.diagnostic, MAX_TEXT),
+    decision: scrubEvidence(f.decision), policyHash: f.policyHash,
     model: f.model, mode: f.mode, priority: f.priority };
+}
+
+function appendHistory(state, { episodeId, sequence }, findings, outcome, timestamp = new Date().toISOString()) {
+  if (!findings.length) return;
+  state.history ??= [];
+  const compact = (finding) => {
+    const evidence = JSON.stringify(finding.evidence ?? null);
+    const bounded = (value) => {
+      const serialized = JSON.stringify(value ?? null);
+      return serialized.length > 1600 ? { reason: "audit_detail_truncated", preview: `${serialized.slice(0, 1500)}…` } : value;
+    };
+    const boundedFindingDetail = (value) => {
+      const serialized = JSON.stringify(value ?? null);
+      return serialized.length > 16000 ? { reason: "audit_detail_truncated", preview: `${serialized.slice(0, 15800)}…` } : value;
+    };
+    return { ...finding,
+      description: secretScrub(finding.description).slice(0, 1000),
+      correction: secretScrub(finding.correction).slice(0, 1000),
+      evidence: evidence.length > 1600 ? [{ id: "audit-truncated", text: `${evidence.slice(0, 1550)}… [evidence omitted]` }] : finding.evidence,
+      judgment: boundedFindingDetail(finding.judgment), diagnostic: bounded(finding.diagnostic), decision: bounded(finding.decision),
+      model: secretScrub(finding.model).slice(0, 160),
+    };
+  };
+  const prioritized = [...findings].sort((a, b) => Number(activeFinding(b) && b.mode === "repair") - Number(activeFinding(a) && a.mode === "repair"));
+  state.history.push({ episodeId, sequence, timestamp, findings: prioritized.slice(0, MAX_ITEMS).map(compact), outcome });
+  state.history = state.history.slice(-MAX_HISTORY);
+  while (state.history.length && Buffer.byteLength(JSON.stringify(state.history)) > MAX_HISTORY_BYTES) state.history.shift();
 }
 
 async function withLock(file, fn, timeout = 1500) {
@@ -75,54 +112,111 @@ export async function handleEvent(event, { reviewer, policies = [], stateDir, co
           String(event.userText ?? "").includes(state.pendingContinuationText.slice(0, 80))));
       const genuine = event.kind === "user_prompt" && event.source === "host_user" && !isContinuation && !event.stopHookActive;
       if (genuine) {
+        state.history ??= [];
+        if (Object.keys(state.findings ?? {}).length && !state.history.some((entry) => entry.episodeId === state.episodeId)) {
+          appendHistory(state, { episodeId: state.episodeId, sequence: state.sequence }, Object.values(state.findings),
+            { action: "unknown", legacy: true });
+        }
         state.episodeId++; state.generation++; state.correctionsDelivered = 0;
+        state.sessionId = event.sessionId;
         state.originatingUserEvent = event.eventId ?? `local-${state.sequence + 1}`;
-        state.currentRequest = secretScrub(event.userText); state.receipts = []; state.changes = [];
-        state.thinking = []; state.response = ""; state.findings = {}; state.pendingContinuation = false;
+        const request = captureText(event.userText);
+        state.currentRequest = request.text; state.requestTruncated = request.truncated; state.receipts = []; state.changes = [];
+        state.thinking = []; state.response = ""; state.responseTruncated = false; state.droppedSources = []; state.findings = {}; state.pendingContinuation = false;
         state.interrupted = false;
         state.recoveryRequired = false;
       } else if (event.kind === "user_prompt" && (event.source === "unknown" || isContinuation) && state.episodeId === 0) {
-        state.episodeId = 1; state.generation++; state.currentRequest = secretScrub(event.userText);
+        const request = captureText(event.userText);
+        state.episodeId = 1; state.generation++; state.currentRequest = request.text; state.requestTruncated = request.truncated; state.sessionId = event.sessionId;
       }
+      if (!state.sessionId) state.sessionId = event.sessionId;
       if (missingState) state.recoveryRequired = true;
       state.sequence++;
       if (event.tool) {
-        const input = secretScrub(JSON.stringify(event.tool.input ?? {}));
+        const input = captureText(JSON.stringify(event.tool.input ?? {}));
+        const result = captureText(event.tool.result);
         if (event.kind === "tool_start") {
-          state.receipts.push({ id: event.tool.id, tool: event.tool.name, name: event.tool.name, input,
-            result: secretScrub(event.tool.result), status: "pending" });
+          state.receipts.push({ id: event.tool.id, tool: event.tool.name, name: event.tool.name, input: input.text, inputTruncated: input.truncated,
+            result: result.text, resultTruncated: result.truncated, status: "pending" });
         } else if (event.kind === "tool_result") {
           const pending = state.receipts.filter((r) => r.status === "pending" &&
             (event.tool.id ? r.id === event.tool.id : r.tool === event.tool.name &&
-              (input === "{}" ? state.receipts.filter((x) => x.status === "pending" && x.tool === event.tool.name).length === 1 : r.input === input)));
+              (input.text === "{}" ? state.receipts.filter((x) => x.status === "pending" && x.tool === event.tool.name).length === 1 : r.input === input.text)));
           if (pending.length === 1) {
-            pending[0].result = secretScrub(event.tool.result);
+            pending[0].result = result.text; pending[0].resultTruncated = result.truncated;
             pending[0].status = event.tool.status === "failure" ? "failure" : "completed";
           } else {
-            state.receipts.push({ id: event.tool.id, tool: event.tool.name, name: event.tool.name, input,
-              result: secretScrub(event.tool.result), status: event.tool.status === "failure" ? "failure" : "completed" });
+            state.receipts.push({ id: event.tool.id, tool: event.tool.name, name: event.tool.name, input: input.text, inputTruncated: input.truncated,
+              result: result.text, resultTruncated: result.truncated, status: event.tool.status === "failure" ? "failure" : "completed" });
           }
         }
-        state.receipts = state.receipts.slice(-MAX_ITEMS);
+        if (state.receipts.length > MAX_ITEMS) {
+          for (const dropped of state.receipts.slice(0, state.receipts.length - MAX_ITEMS)) state.droppedSources = [...new Set([...(state.droppedSources ?? []), `receipt:${dropped.id ?? "unknown"}`])];
+          state.receipts = state.receipts.slice(-MAX_ITEMS);
+        }
       }
       if (event.kind === "tool_result" && event.tool && event.tool.status !== "failure" && Array.isArray(event.changes)) {
         const byPath = new Map(state.changes.map((change) => [change.path, change]));
         for (const change of event.changes) {
-          const normalized = { path: secretScrub(change.path), text: secretScrub(change.text), context: secretScrub(change.context) };
+          const pathCapture = captureText(change.path), textCapture = captureText(change.text), contextCapture = captureText(change.context);
+          const normalized = { path: pathCapture.text, text: textCapture.text, context: contextCapture.text,
+            truncated: { path: pathCapture.truncated, text: textCapture.truncated, context: contextCapture.truncated } };
           if (normalized.path) byPath.set(normalized.path, normalized);
         }
-        state.changes = [...byPath.values()].slice(-MAX_ITEMS);
+        const changes = [...byPath.values()];
+        if (changes.length > MAX_ITEMS) {
+          for (const dropped of changes.slice(0, changes.length - MAX_ITEMS)) state.droppedSources = [...new Set([...(state.droppedSources ?? []), `change:${dropped.path || "unknown"}`])];
+          state.changes = changes.slice(-MAX_ITEMS);
+        } else state.changes = changes;
       }
-      if (Array.isArray(event.thinking)) state.thinking.push(...event.thinking.map((x) => ({ ...x, text: secretScrub(x.text) })));
-      state.thinking = state.thinking.slice(-MAX_ITEMS);
-      if (event.response !== undefined) state.response = secretScrub(event.response);
+      if (Array.isArray(event.thinking)) state.thinking.push(...event.thinking.map((x, i) => {
+        const captured = captureText(x.text);
+        return { ...x, text: captured.text, truncated: Boolean(x.truncated || captured.truncated), id: x.id ?? `thinking-${state.sequence}-${i}` };
+      }));
+      if (state.thinking.length > MAX_ITEMS) {
+        for (const dropped of state.thinking.slice(0, state.thinking.length - MAX_ITEMS)) state.droppedSources = [...new Set([...(state.droppedSources ?? []), `thinking:${dropped.id ?? "unknown"}`])];
+        state.thinking = state.thinking.slice(-MAX_ITEMS);
+      }
+      if (event.response !== undefined) {
+        const response = captureText(event.response); state.response = response.text; state.responseTruncated = response.truncated;
+      }
       if (event.kind === "interrupt") { state.interrupted = true; state.pendingContinuation = false; state.pendingContinuationText = ""; }
       if (event.kind === "session_end") { state.pendingContinuation = false; state.pendingContinuationText = ""; }
+      const snapshot = { eventKind: event.kind, request: state.currentRequest, response: state.response,
+        receipts: state.receipts.slice(), changes: state.changes.slice(), thinking: state.thinking.slice(), coverage: {} };
+      const truncatedSources = [];
+      truncatedSources.push(...(state.droppedSources ?? []));
+      if (state.requestTruncated) truncatedSources.push("request");
+      if (state.responseTruncated) truncatedSources.push("response");
+      const budgetCapture = (value, id) => {
+        if (typeof value !== "string") return value;
+        const remaining = Math.max(0, MAX_REVIEW_CAPTURE - budgetCapture.used);
+        const kept = value.slice(0, remaining); budgetCapture.used += kept.length;
+        if (kept.length < value.length && !truncatedSources.includes(id)) truncatedSources.push(id);
+        return kept;
+      };
+      budgetCapture.used = 0;
+      snapshot.request = budgetCapture(snapshot.request, "request"); snapshot.response = budgetCapture(snapshot.response, "response");
+      snapshot.receipts = snapshot.receipts.map((receipt, i) => {
+        const id = receipt.id ?? i;
+        if (receipt.inputTruncated) truncatedSources.push(`receipt:${id}:input`);
+        if (receipt.resultTruncated) truncatedSources.push(`receipt:${id}:result`);
+        return { ...receipt, input: budgetCapture(receipt.input, `receipt:${id}:input`), result: budgetCapture(receipt.result, `receipt:${id}:result`) };
+      });
+      snapshot.changes = snapshot.changes.map((change) => {
+        const id = change.path || "unknown";
+        for (const key of Object.keys(change.truncated ?? {})) if (change.truncated[key]) truncatedSources.push(`change:${id}:${key}`);
+        return { ...change, path: budgetCapture(change.path, `change:${id}:path`), text: budgetCapture(change.text, `change:${id}:text`), context: budgetCapture(change.context, `change:${id}:context`) };
+      });
+      snapshot.thinking = snapshot.thinking.map((thought, i) => {
+        const id = `thinking:${thought.id ?? i}`;
+        if (thought.truncated) truncatedSources.push(id);
+        return { ...thought, text: budgetCapture(thought.text, id) };
+      });
+      snapshot.coverage = { complete: truncatedSources.length === 0, truncatedSources: [...new Set(truncatedSources)] };
       await save(file, state);
-      return { generation: state.generation, sequence: state.sequence, interrupted: state.interrupted, missingState, recoveryRequired: state.recoveryRequired, snapshot: {
-        eventKind: event.kind, request: state.currentRequest, response: state.response,
-        receipts: state.receipts.slice(), changes: state.changes.slice(), thinking: state.thinking.slice(), coverage: {},
-      } };
+      return { generation: state.generation, sequence: state.sequence, episodeId: state.episodeId, sessionId: state.sessionId,
+        interrupted: state.interrupted, missingState, recoveryRequired: state.recoveryRequired, snapshot };
     });
   } catch { return { action: "none", notice: "Agent Rules state storage is unavailable; review is observe-only." }; }
 
@@ -138,6 +232,13 @@ export async function handleEvent(event, { reviewer, policies = [], stateDir, co
     outcome = await withLock(file, async () => {
       const state = await load(file);
       if (state.generation !== captured.generation || state.sequence !== captured.sequence) return { stale: true };
+      state.history ??= [];
+      const complete = (effect = neutral, correction = undefined) => {
+        const outcome = { action: effect.action ?? "none", ...(effect.notice ? { notice: secretScrub(effect.notice) } : {}),
+          ...(correction ? { correction: secretScrub(correction) } : {}) };
+        appendHistory(state, captured, findings, outcome);
+        return effect;
+      };
       const reviewStatus = String(result?.status ?? "").toLowerCase();
       const statuses = findings.map((f) => String(f.status).toLowerCase());
       const health = ["unknown", "unavailable"].includes(reviewStatus) ? reviewStatus
@@ -153,11 +254,12 @@ export async function handleEvent(event, { reviewer, policies = [], stateDir, co
         }
         state.findings = Object.fromEntries(Object.entries(state.findings)
           .sort((a, b) => (a[1].lastSeen ?? 0) - (b[1].lastSeen ?? 0)).slice(-MAX_ITEMS));
-        await save(file, state);
-        if (priorHealth === health) return neutral;
-        return { action: "none", notice: health === "unknown"
-          ? "Agent Rules could not review this event because required evidence is missing or inconclusive."
-          : "Agent Rules review is temporarily unavailable; no correction was issued." };
+        const details = [...new Set(findings.filter((f) => f.status === health || f.status === "unknown" || f.status === "unavailable")
+          .map((f) => `${f.ruleId ?? "policy"}: ${f.diagnostic?.message ?? f.diagnostic?.code ?? (f.judgment?.reason === "evidence_budget_exceeded" ? "evidence exceeded the review budget" : "review was inconclusive")}`))];
+        const effect = priorHealth === health ? neutral : { action: "none", notice: health === "unknown"
+          ? `Agent Rules could not complete review${details.length ? ` (${details.join("; ")}; evidence may be missing or inconclusive)` : "; evidence is missing or inconclusive"}.`
+          : `Agent Rules review is temporarily unavailable${details.length ? ` (${details.join("; ")})` : ""}; no correction was issued.` };
+        const done = complete(effect); await save(file, state); return done;
       }
       const recovered = Boolean(priorHealth && priorHealth !== "healthy");
       const newOnes = []; let resolved = false; let unchangedActive = false;
@@ -184,21 +286,21 @@ export async function handleEvent(event, { reviewer, policies = [], stateDir, co
         for (const f of actionable) state.findings[findingKey(f)].attempts++;
         const feedback = actionable.map((f) => `[Agent Rules: ${f.ruleId ?? "policy"}; attempt ${attempt}/${cap}]\nEvidence: ${shownEvidence(f.evidence) || "(none provided)"}\nCorrection: ${f.correction}`).join("\n\n");
         state.pendingContinuationText = feedback;
-        await save(file, state);
-        return { action: event.kind === "response_end" ? "continue_turn" : "add_context",
+        const effect = { action: event.kind === "response_end" ? "continue_turn" : "add_context",
           feedback,
           notice: `Agent Rules: ${actionable.map((f) => f.ruleId ?? "policy").join(", ")} (${attempt}/${cap}).` };
+        const done = complete(effect, feedback); await save(file, state); return done;
       }
       if (actionable.length && state.correctionsDelivered >= cap) {
-        await save(file, state);
-        return { action: "none", notice: "Behavior review reached the correction limit for this request." };
+        const done = complete({ action: "none", notice: "Behavior review reached the correction limit for this request." });
+        await save(file, state); return done;
       }
-      await save(file, state);
-      if (resolved) return { action: "none", notice: "A previously reported issue is no longer present in the latest review." };
-      if (unchangedActive && state.correctionsDelivered >= cap) return { action: "none", notice: "Behavior review reached the correction limit for this request." };
-      if (unchangedActive) return { action: "none", notice: "No progress was observed on the previously reported issue." };
-      if (recovered) return { action: "none", notice: "Agent Rules review coverage has recovered." };
-      return neutral;
+      let effect = neutral;
+      if (resolved) effect = { action: "none", notice: "A previously reported issue is no longer present in the latest review." };
+      else if (unchangedActive && state.correctionsDelivered >= cap) effect = { action: "none", notice: "Behavior review reached the correction limit for this request." };
+      else if (unchangedActive) effect = { action: "none", notice: "No progress was observed on the previously reported issue." };
+      else if (recovered) effect = { action: "none", notice: "Agent Rules review coverage has recovered." };
+      const done = complete(effect); await save(file, state); return done;
     });
   } catch { return { action: "none", notice: "Agent Rules state storage is unavailable; review is observe-only." }; }
   return outcome?.stale ? neutral : outcome ?? neutral;

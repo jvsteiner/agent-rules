@@ -22,7 +22,7 @@ test("review batches eligible candidates, keeps source spans, and validates an a
 
 test("missing required evidence and partial thinking never trigger a Jev violation", async () => {
   let calls = 0;
-  const reviewer = createReviewer({ client: { evaluate: async () => { calls++; return { answers: {} }; } } });
+  const reviewer = createReviewer({ maxReviewRequests: 1, client: { evaluate: async () => { calls++; return { answers: {} }; } } });
   const noReceipt = snapshot(); noReceipt.receipts = [];
   const missing = await reviewer.review(noReceipt, [policy("a")]);
   assert.equal(calls, 0);
@@ -42,11 +42,18 @@ test("unknown, low confidence, malformed, missing answers and deadline failures 
     { answers: {} },
   ];
   const reviewer = createReviewer({ client: { evaluate: async () => responses.shift() }, deadlineMs: 20 });
-  const statuses = [];
-  for (let i = 0; i < 4; i++) statuses.push((await reviewer.review(snapshot(), [policy("a")] )).findings[0].status);
+  const checked = [];
+  for (let i = 0; i < 4; i++) checked.push((await reviewer.review(snapshot(), [policy("a")] )).findings[0]);
+  const statuses = checked.map((finding) => finding.status);
   assert.deepEqual(statuses, ["unknown", "unknown", "unavailable", "unavailable"]);
+  assert.equal(checked[0].diagnostic.code, "unknown_choice");
+  assert.equal(checked[1].diagnostic.code, "below_threshold");
+  assert.equal(checked[2].diagnostic.code, "malformed_answer");
+  assert.equal(checked[3].diagnostic.code, "missing_answer");
   const slow = createReviewer({ client: { evaluate: (_arg) => new Promise((resolve) => setTimeout(() => resolve({ answers: {} }), 50)) }, deadlineMs: 5 });
-  assert.equal((await slow.review(snapshot(), [policy("a")] )).findings[0].status, "unavailable");
+  const timedOut = (await slow.review(snapshot(), [policy("a")] )).findings[0];
+  assert.equal(timedOut.status, "unavailable");
+  assert.equal(timedOut.diagnostic.code, "deadline_exceeded");
 });
 
 test("noul and score answers use their declared probability thresholds", async () => {
@@ -73,7 +80,7 @@ test("regex policies are evaluated locally and response target keeps one whole-a
 
 test("oversized evidence skips transport, marks the result unknown, and records truncation", async () => {
   let calls = 0;
-  const reviewer = createReviewer({ client: { evaluate: async () => { calls++; return { answers: {} }; } } });
+  const reviewer = createReviewer({ maxReviewRequests: 1, client: { evaluate: async () => { calls++; return { answers: {} }; } } });
   const huge = snapshot("All tests passed.");
   huge.receipts[0].result = "x".repeat(30000);
   const finding = (await reviewer.review(huge, [policy("a")])).findings[0];
@@ -107,5 +114,40 @@ test("starter policies parse through PolicyCatalog and their cases use the share
       assert.ok(["violation", "clear", "unknown"].includes(example.expected));
       assert.ok(example.snapshot);
     }
+  }
+});
+
+test("unknown and unavailable findings include useful sanitized diagnostics and decision thresholds", async () => {
+  const reviewer = createReviewer({ client: { evaluate: async () => { throw new Error("token: TOPSECRET upstream"); } } });
+  const failed = (await reviewer.review(snapshot(), [policy("a")])).findings[0];
+  assert.equal(failed.diagnostic.code, "transport_failure");
+  assert.match(failed.diagnostic.message, /could not be completed/);
+  assert.doesNotMatch(JSON.stringify(failed), /TOPSECRET/);
+
+  const absent = snapshot(); absent.receipts = [];
+  const missing = (await createReviewer().review(absent, [policy("needs-receipts")])).findings[0];
+  assert.equal(missing.diagnostic.code, "missing_evidence");
+  assert.deepEqual(missing.diagnostic.missingEvidence, ["receipts"]);
+
+  const uncertainReviewer = createReviewer({ client: { evaluate: async () => ({ answers: { q0: { type: "choice", choice: "contradicted", probabilities: { contradicted: .65, supported: .3, unknown: .05 } } } }) } });
+  const uncertain = (await uncertainReviewer.review(snapshot(), [policy("a")])).findings[0];
+  assert.equal(uncertain.diagnostic.code, "below_threshold");
+  assert.deepEqual(uncertain.diagnostic.decision, policy("a").detector.decision);
+});
+
+test("oversized candidates are omitted individually while a small candidate is still reviewed", async () => {
+  let sent;
+  const reviewer = createReviewer({ maxReviewRequests: 1, client: { evaluate: async (arg) => {
+    sent = arg;
+    return { answers: { q0: { type: "choice", choice: "supported", probabilities: { contradicted: .01, supported: .99 } } } };
+  } } });
+  const small = { ...policy("small"), target: "response", requires: ["response"], detector: { type: "jev", question: { type: "choice", instructions: "Classify state.candidates[index]", criteria: { supported: "Supported", contradicted: "Contradicted" } }, decision: { violation: { option: "contradicted", min_probability: .9 }, min_winner_probability: .9 } } };
+  const huge = { ...policy("huge"), target: "response", requires: ["response", "receipts"] };
+  const s = snapshot("small answer"); s.receipts[0].result = "x".repeat(26000);
+  for (const policies of [[small, huge], [huge, small]]) {
+    const result = await reviewer.review(s, policies);
+    assert.equal(Object.keys(sent.questions).length, 1);
+    assert.equal(result.findings.find((x) => x.ruleId === "small").status, "clear");
+    assert.equal(result.findings.find((x) => x.ruleId === "huge").diagnostic.code, "input_budget_exceeded");
   }
 });

@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { mkdtempSync,writeFileSync,readFileSync } from 'node:fs';
+import { mkdtempSync,mkdirSync,copyFileSync,writeFileSync,readFileSync } from 'node:fs';
 import {tmpdir} from 'node:os';
 import {join,resolve} from 'node:path';
 const cli=resolve('bin/agent-rules.js');
@@ -24,4 +24,17 @@ test('set-mode preserves unrelated explicit configuration',()=>{
 test('evaluate never silently makes remote requests',()=>{
  const r=run(['evaluate','policies/test-result-contradiction.md','--fixtures','policies/test-result-contradiction.cases.jsonl']);
  assert.notEqual(r.status,0);assert.match(r.stderr,/replay|live/i);
+});
+test('inspect searches bounded review history by rule and can select a session',()=>{
+ const dir=mkdtempSync(join(tmpdir(),'ar-inspect-'));const stateDir=join(dir,'state');const config=join(dir,'config.json');
+ const record={episodeId:3,sequence:12,timestamp:'2026-09-24T10:00:00.000Z',outcome:{action:'continue_turn',correction:'Please remove the cat pictures.'},findings:[{ruleId:'communication.cat-pictures',status:'violation',judgment:{choice:'yes'},diagnostic:null}]};
+ writeFileSync(join(dir,'state-file.json'),JSON.stringify({version:1,generation:3,episodeId:3,sessionId:'session-one',findings:{},history:[record]}));
+ mkdirSync(stateDir);copyFileSync(join(dir,'state-file.json'),join(stateDir,'state-file.json'));
+ writeFileSync(config,JSON.stringify({stateDir}));
+ const r=run(['inspect','communication.cat-pictures','--session','session-one'],{AGENT_RULES_STATE_DIR:stateDir});
+ assert.equal(r.status,0,r.stderr);const data=JSON.parse(r.stdout);
+ assert.equal(data.records.length,1);assert.equal(data.records[0].episodeId,3);assert.equal(data.records[0].findings[0].ruleId,'communication.cat-pictures');
+ assert.equal(data.records[0].outcome.correction,'Please remove the cat pictures.');
+ const absent=run(['inspect','communication.cat-pictures','--session','other'],{AGENT_RULES_STATE_DIR:stateDir});
+ assert.equal(JSON.parse(absent.stdout).records.length,0);
 });

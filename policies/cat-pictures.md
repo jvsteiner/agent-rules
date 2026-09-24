@@ -41,4 +41,4 @@ The user does not want the agent to discuss cat pictures.
 
 ## Correction
 
-Remove all discussion of cat pictures from your response. Do not describe, share, link to, or suggest cat pictures. If the user asked about cat pictures, say briefly that you do not discuss cat pictures, then continue with the rest of the task.
+Remove all discussion of cat pictures from your response. Do not describe, share, link to, or suggest cat pictures. If the user asked about this topic, say "I can't help with that topic" without naming it, then continue with the rest of the task.

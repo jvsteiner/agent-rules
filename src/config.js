@@ -1,8 +1,8 @@
 import { readFile } from 'node:fs/promises';
 import path from 'node:path';
 
-const DEFAULTS = Object.freeze({ model: 'jev-1.13.0', reviewDeadlineMs: 2000, maxCorrectionsPerEpisode: 2, rules: {} });
-const ALLOWED = new Set(['schema', 'model', 'reviewDeadlineMs', 'maxCorrectionsPerEpisode', 'rules']);
+const DEFAULTS = Object.freeze({ model: 'jev-1.13.0', reviewDeadlineMs: 2000, maxCorrectionsPerEpisode: 2, maxReviewRequests: 4, rules: {} });
+const ALLOWED = new Set(['schema', 'model', 'reviewDeadlineMs', 'maxCorrectionsPerEpisode', 'maxReviewRequests', 'rules']);
 
 function validateLayer(raw, source, diagnostics) {
   if (!raw || typeof raw !== 'object' || Array.isArray(raw)) { diagnostics.push({ source, message: 'configuration must be a JSON object' }); return {}; }
@@ -15,6 +15,8 @@ function validateLayer(raw, source, diagnostics) {
   else if (raw.reviewDeadlineMs !== undefined) diagnostics.push({ source, message: 'reviewDeadlineMs must be an integer from 100 to 120000' });
   if (Number.isInteger(raw.maxCorrectionsPerEpisode) && raw.maxCorrectionsPerEpisode >= 0 && raw.maxCorrectionsPerEpisode <= 20) valid.maxCorrectionsPerEpisode = raw.maxCorrectionsPerEpisode;
   else if (raw.maxCorrectionsPerEpisode !== undefined) diagnostics.push({ source, message: 'maxCorrectionsPerEpisode must be an integer from 0 to 20' });
+  if (Number.isInteger(raw.maxReviewRequests) && raw.maxReviewRequests >= 1 && raw.maxReviewRequests <= 8) valid.maxReviewRequests = raw.maxReviewRequests;
+  else if (raw.maxReviewRequests !== undefined) diagnostics.push({ source, message: 'maxReviewRequests must be an integer from 1 to 8' });
   if (raw.rules !== undefined) {
     if (!raw.rules || typeof raw.rules !== 'object' || Array.isArray(raw.rules)) diagnostics.push({ source, message: 'rules must be an object of rule IDs and modes' });
     else {
@@ -53,7 +55,7 @@ export async function loadConfig({ projectRoot = process.cwd(), configPath, home
   const merged = { ...DEFAULTS, rules: {} };
   for (const file of layers) {
     const part = await readConfig(file, diagnostics);
-    for (const key of ['model', 'reviewDeadlineMs', 'maxCorrectionsPerEpisode']) if (part[key] !== undefined) merged[key] = part[key];
+    for (const key of ['model', 'reviewDeadlineMs', 'maxCorrectionsPerEpisode', 'maxReviewRequests']) if (part[key] !== undefined) merged[key] = part[key];
     if (part.rules) Object.assign(merged.rules, part.rules);
   }
   merged.policyDirectories = explicit ? [] : [path.join(home, '.config', 'agent-rules', 'rules'), path.join(projectRoot, '.agent-rules', 'rules')];

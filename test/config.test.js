@@ -17,6 +17,7 @@ test('merges user then project settings and preserves defaults', async () => {
     assert.equal(config.model, 'custom');
     assert.equal(config.reviewDeadlineMs, 2000);
     assert.equal(config.maxCorrectionsPerEpisode, 2);
+    assert.equal(config.maxReviewRequests, 4);
     assert.deepEqual(config.rules, { a: 'off', b: 'repair' });
     assert.deepEqual(config.policyDirectories, [path.join(home, '.config', 'agent-rules', 'rules'), path.join(project, '.agent-rules', 'rules')]);
   } finally { await rm(root, { recursive: true, force: true }); }
@@ -44,5 +45,18 @@ test('rejects project credential settings and unsafe numeric values', async () =
     assert.equal(JSON.stringify(result).includes('secret'), false);
     assert.ok(result.diagnostics.length);
     assert.equal(result.config.maxCorrectionsPerEpisode, 2);
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
+
+test('validates maxReviewRequests from one through eight', async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'agent-config-'));
+  try {
+    const file = path.join(root, 'config.json');
+    await writeFile(file, JSON.stringify({ maxReviewRequests: 8 }));
+    assert.equal((await loadConfig({ projectRoot: root, home: root, configPath: file, env: {} })).config.maxReviewRequests, 8);
+    await writeFile(file, JSON.stringify({ maxReviewRequests: 9 }));
+    const result = await loadConfig({ projectRoot: root, home: root, configPath: file, env: {} });
+    assert.equal(result.config.maxReviewRequests, 4);
+    assert.match(result.diagnostics[0].message, /maxReviewRequests/);
   } finally { await rm(root, { recursive: true, force: true }); }
 });
