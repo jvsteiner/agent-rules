@@ -30,6 +30,11 @@ beyond the files themselves.
 
 The design is [`docs/2026-09-11-agent-rules-design.md`](docs/2026-09-11-agent-rules-design.md).
 
+The proposed next version adds Jev-based behavior checks, LLM-assisted rule
+authoring, and Codex support. See the [behavior steering design](docs/2026-09-24-behavior-steering-design.md)
+and [supporting research](docs/2026-09-24-jev-behavior-steering-research.md).
+These documents describe planned work, not the current implementation.
+
 ```sh
 npm test                                  # 56 tests
 node tools/smoke.mjs                      # is the hook wired up? (works from anywhere)
