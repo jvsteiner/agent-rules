@@ -1,0 +1,152 @@
+{
+  "schema": "agent-rules/evaluation-v1",
+  "createdAt": "2026-09-24T00:32:37.646Z",
+  "live": true,
+  "model": "jev-1.13.0",
+  "policyHashes": [
+    {
+      "id": "code.swallowed-error",
+      "hash": "9f71fe0d47dae4c6167c20f52a817af0eb5dc4fb688f3119a1f984b129c63854"
+    }
+  ],
+  "summary": {
+    "total": 3,
+    "passed": 3,
+    "failed": 0,
+    "falsePositives": 0,
+    "falseNegatives": 0,
+    "abstentions": 1,
+    "unavailable": 0,
+    "inputTokens": 1178,
+    "outputTokens": 104
+  },
+  "cases": [
+    {
+      "id": "swallowed-empty-catch",
+      "labelSource": "generated",
+      "split": "development",
+      "expected": "violation",
+      "actual": "violation",
+      "passed": true,
+      "inputHash": "2b2e6ae86d7f529bf8c59bd00297bc595b73353d2533bfb5c0725d52cb5437a2",
+      "review": {
+        "findings": [
+          {
+            "id": "4e03ffedd75fe31c6fbc",
+            "ruleId": "code.swallowed-error",
+            "status": "violation",
+            "evidence": [
+              {
+                "id": "change-1",
+                "text": "src/save.js\ntry { await save(); } catch (error) {}"
+              },
+              {
+                "id": "change-1",
+                "text": "src/save.js\ntry { await save(); } catch (error) {}\nasync function persist() { ... }"
+              }
+            ],
+            "judgment": {
+              "type": "choice",
+              "choice": "swallowed",
+              "confidence": 1,
+              "probabilities": {
+                "unknown": 0,
+                "swallowed": 1,
+                "handled": 0,
+                "not_applicable": 0
+              }
+            },
+            "policyHash": "9f71fe0d47dae4c6167c20f52a817af0eb5dc4fb688f3119a1f984b129c63854",
+            "correction": "Report, propagate, or otherwise make the failure outcome visible.",
+            "description": "Surface failures caught by changed code instead of silently discarding them.",
+            "priority": 25,
+            "mode": "observe"
+          }
+        ],
+        "usage": {
+          "input_tokens": 581,
+          "output_tokens": 53
+        },
+        "model": "jev-1.13.0",
+        "elapsedMs": 761
+      }
+    },
+    {
+      "id": "swallowed-propagated",
+      "labelSource": "generated",
+      "split": "development",
+      "expected": "clear",
+      "actual": "clear",
+      "passed": true,
+      "inputHash": "b3f682932c8721b425598786ea60eea7ce685c320c60801d7a04ebcc0ad61bf2",
+      "review": {
+        "findings": [
+          {
+            "id": "513cf8b0e6edab0617f9",
+            "ruleId": "code.swallowed-error",
+            "status": "clear",
+            "evidence": [
+              {
+                "id": "change-2",
+                "text": "src/save.js\ntry { await save(); } catch (error) { logger.error(error); throw error; }"
+              },
+              {
+                "id": "change-2",
+                "text": "src/save.js\ntry { await save(); } catch (error) { logger.error(error); throw error; }\nasync function persist() { ... }"
+              }
+            ],
+            "judgment": {
+              "type": "choice",
+              "choice": "handled",
+              "confidence": 1,
+              "probabilities": {
+                "not_applicable": 0,
+                "unknown": 0,
+                "handled": 1,
+                "swallowed": 0
+              }
+            },
+            "policyHash": "9f71fe0d47dae4c6167c20f52a817af0eb5dc4fb688f3119a1f984b129c63854",
+            "correction": "Report, propagate, or otherwise make the failure outcome visible.",
+            "description": "Surface failures caught by changed code instead of silently discarding them.",
+            "priority": 25,
+            "mode": "observe"
+          }
+        ],
+        "usage": {
+          "input_tokens": 597,
+          "output_tokens": 51
+        },
+        "model": "jev-1.13.0",
+        "elapsedMs": 667
+      }
+    },
+    {
+      "id": "swallowed-missing-context",
+      "labelSource": "generated",
+      "split": "development",
+      "expected": "unknown",
+      "actual": "unknown",
+      "passed": true,
+      "inputHash": "76c52d799f09899c9376613e2ede131a7497012fa3dd87d4d302d625b82dfb9d",
+      "review": {
+        "findings": [
+          {
+            "id": "a409b35d8dd9ae4bf160",
+            "ruleId": "code.swallowed-error",
+            "status": "unknown",
+            "evidence": [],
+            "judgment": null,
+            "policyHash": "9f71fe0d47dae4c6167c20f52a817af0eb5dc4fb688f3119a1f984b129c63854",
+            "correction": "Report, propagate, or otherwise make the failure outcome visible.",
+            "description": "Surface failures caught by changed code instead of silently discarding them.",
+            "priority": 25,
+            "mode": "observe"
+          }
+        ],
+        "model": "jev-1.13.0",
+        "elapsedMs": 0
+      }
+    }
+  ]
+}

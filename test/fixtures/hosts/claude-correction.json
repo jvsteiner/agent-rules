@@ -1,0 +1,51 @@
+{
+  "provenance": "Observed claude live Jev marker probe; paths and IDs replaced",
+  "events": [
+    {
+      "session_id": "observed-claude-session",
+      "transcript_path": null,
+      "cwd": "/fixture/workspace",
+      "hook_event_name": "SessionStart",
+      "source": "startup"
+    },
+    {
+      "session_id": "observed-claude-session",
+      "transcript_path": null,
+      "cwd": "/fixture/workspace",
+      "prompt_id": "observed-prompt",
+      "permission_mode": "default",
+      "hook_event_name": "UserPromptSubmit",
+      "prompt": "This is a plugin integration test. Respond with exactly PROBE_INITIAL. Do not call tools."
+    },
+    {
+      "session_id": "observed-claude-session",
+      "transcript_path": null,
+      "cwd": "/fixture/workspace",
+      "prompt_id": "observed-prompt",
+      "permission_mode": "default",
+      "effort": {
+        "level": "medium"
+      },
+      "hook_event_name": "Stop",
+      "stop_hook_active": false,
+      "last_assistant_message": "PROBE_INITIAL",
+      "background_tasks": [],
+      "session_crons": []
+    },
+    {
+      "session_id": "observed-claude-session",
+      "transcript_path": null,
+      "cwd": "/fixture/workspace",
+      "prompt_id": "observed-prompt",
+      "permission_mode": "default",
+      "effort": {
+        "level": "medium"
+      },
+      "hook_event_name": "Stop",
+      "stop_hook_active": true,
+      "last_assistant_message": "PROBE_CORRECTED",
+      "background_tasks": [],
+      "session_crons": []
+    }
+  ]
+}

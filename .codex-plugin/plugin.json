@@ -1,0 +1,17 @@
+{
+  "name": "agent-rules",
+  "version": "0.2.0",
+  "description": "Visible, bounded behavioral corrections with Jev and editable policies.",
+  "author": { "name": "Jamie Steiner" },
+  "license": "MIT",
+  "skills": "./skills/",
+  "interface": {
+    "displayName": "Agent Rules",
+    "shortDescription": "Inspect and correct undesirable agent behavior.",
+    "longDescription": "Editable policies, Jev classification, and bounded corrective feedback for coding agents.",
+    "developerName": "Jamie Steiner",
+    "category": "Productivity",
+    "capabilities": ["Read", "Write"],
+    "defaultPrompt": ["Help me author a behavioral rule and evaluate it against examples."]
+  }
+}

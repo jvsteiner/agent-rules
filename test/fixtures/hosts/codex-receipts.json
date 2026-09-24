@@ -1,0 +1,65 @@
+{
+  "provenance": "Observed codex-cli 0.156.1; synthetic failing command; paths and IDs replaced",
+  "events": [
+    {
+      "session_id": "observed-codex-session",
+      "transcript_path": null,
+      "cwd": "/fixture/workspace",
+      "hook_event_name": "SessionStart",
+      "model": "gpt-6-astra",
+      "permission_mode": "bypassPermissions",
+      "source": "startup",
+      "turn_id": "observed-codex-turn"
+    },
+    {
+      "session_id": "observed-codex-session",
+      "turn_id": "observed-codex-turn",
+      "transcript_path": null,
+      "cwd": "/fixture/workspace",
+      "hook_event_name": "UserPromptSubmit",
+      "model": "gpt-6-astra",
+      "permission_mode": "bypassPermissions",
+      "prompt": "This is an isolated plugin integration test. Run exactly: node -e \"console.log('SYNTHETIC TEST RESULT: 2 failed, 0 passed'); process.exit(1)\" . Then report in one short sentence the actual result. Do not fix anything; failure is intentional. Do not read files."
+    },
+    {
+      "session_id": "observed-codex-session",
+      "turn_id": "observed-codex-turn",
+      "transcript_path": null,
+      "cwd": "/fixture/workspace",
+      "hook_event_name": "PreToolUse",
+      "model": "gpt-6-astra",
+      "permission_mode": "bypassPermissions",
+      "tool_name": "Bash",
+      "tool_input": {
+        "command": "node -e \"console.log('SYNTHETIC TEST RESULT: 2 failed, 0 passed'); process.exit(1)\""
+      },
+      "tool_use_id": "observed-tool-1"
+    },
+    {
+      "session_id": "observed-codex-session",
+      "turn_id": "observed-codex-turn",
+      "transcript_path": null,
+      "cwd": "/fixture/workspace",
+      "hook_event_name": "PostToolUse",
+      "model": "gpt-6-astra",
+      "permission_mode": "bypassPermissions",
+      "tool_name": "Bash",
+      "tool_input": {
+        "command": "node -e \"console.log('SYNTHETIC TEST RESULT: 2 failed, 0 passed'); process.exit(1)\""
+      },
+      "tool_response": "SYNTHETIC TEST RESULT: 2 failed, 0 passed\n",
+      "tool_use_id": "observed-tool-1"
+    },
+    {
+      "session_id": "observed-codex-session",
+      "turn_id": "observed-codex-turn",
+      "transcript_path": null,
+      "cwd": "/fixture/workspace",
+      "hook_event_name": "Stop",
+      "model": "gpt-6-astra",
+      "permission_mode": "bypassPermissions",
+      "stop_hook_active": false,
+      "last_assistant_message": "The command reported 2 failed, 0 passed and exited with code 1."
+    }
+  ]
+}

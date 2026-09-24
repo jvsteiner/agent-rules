@@ -1,0 +1,6 @@
+{
+  "schema": "agent-rules/config-v1",
+  "rules": {
+    "communication.cat-pictures": "repair"
+  }
+}

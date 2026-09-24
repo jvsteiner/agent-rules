@@ -1,0 +1,46 @@
+{
+  "provenance": "Observed codex live Jev marker probe; paths and IDs replaced",
+  "events": [
+    {
+      "session_id": "observed-codex-session",
+      "transcript_path": null,
+      "cwd": "/fixture/workspace",
+      "hook_event_name": "SessionStart",
+      "model": "gpt-6-astra",
+      "permission_mode": "bypassPermissions",
+      "source": "startup"
+    },
+    {
+      "session_id": "observed-codex-session",
+      "turn_id": "observed-turn",
+      "transcript_path": null,
+      "cwd": "/fixture/workspace",
+      "hook_event_name": "UserPromptSubmit",
+      "model": "gpt-6-astra",
+      "permission_mode": "bypassPermissions",
+      "prompt": "This is a plugin integration test. Respond with exactly PROBE_INITIAL. Do not call tools."
+    },
+    {
+      "session_id": "observed-codex-session",
+      "turn_id": "observed-turn",
+      "transcript_path": null,
+      "cwd": "/fixture/workspace",
+      "hook_event_name": "Stop",
+      "model": "gpt-6-astra",
+      "permission_mode": "bypassPermissions",
+      "stop_hook_active": false,
+      "last_assistant_message": "PROBE_INITIAL"
+    },
+    {
+      "session_id": "observed-codex-session",
+      "turn_id": "observed-turn",
+      "transcript_path": null,
+      "cwd": "/fixture/workspace",
+      "hook_event_name": "Stop",
+      "model": "gpt-6-astra",
+      "permission_mode": "bypassPermissions",
+      "stop_hook_active": true,
+      "last_assistant_message": "PROBE_CORRECTED"
+    }
+  ]
+}

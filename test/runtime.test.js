@@ -1,0 +1,226 @@
+import assert from "node:assert/strict";
+import { mkdtemp, readFile, readdir } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import test from "node:test";
+import { spawn } from "node:child_process";
+import { handleEvent } from "../src/runtime.js";
+import { createReviewer } from "../src/review.js";
+import { parsePolicy } from "../src/catalog.js";
+
+const make = async () => ({ stateDir: await mkdtemp(join(tmpdir(), "ar-runtime-")), policies: [{ id: "p" }] });
+const event = (kind, extra = {}) => ({ platform: "codex", sessionId: "s", actorId: "main", kind, source: "unknown", ...extra });
+const reviewerWith = (findings) => ({ review: async () => ({ findings }) });
+const finding = (id = "f", evidence = "e1", mode = "repair") => ({ id, ruleId: "rule", status: "finding", description: "issue", correction: "correct it", evidence, mode });
+
+test("genuine user prompt starts an episode; continuation does not reset the cap", async () => {
+  const ctx = await make(); const reviewer = reviewerWith([finding()]);
+  await handleEvent(event("user_prompt", { source: "host_user", userText: "task" }), ctx);
+  const first = await handleEvent(event("response_end", { response: "bad" }), { ...ctx, reviewer });
+  assert.equal(first.action, "continue_turn");
+  await handleEvent(event("user_prompt", { source: "plugin_continuation", userText: first.feedback }), ctx);
+  const second = await handleEvent(event("response_end", { response: "still bad" }), { ...ctx, reviewer });
+  assert.equal(second.action, "none"); assert.match(second.notice, /No progress/);
+  await handleEvent(event("user_prompt", { source: "host_user", userText: "new task" }), ctx);
+  assert.equal((await handleEvent(event("response_end", { response: "bad again" }), { ...ctx, reviewer })).action, "continue_turn");
+});
+
+test("unchanged evidence is quiet and updated evidence can use only the remaining cap", async () => {
+  const ctx = await make(); let f = finding("f", "same"); const reviewer = { review: async () => ({ findings: [f] }) };
+  await handleEvent(event("user_prompt", { source: "host_user", userText: "task" }), ctx);
+  assert.equal((await handleEvent(event("response_end"), { ...ctx, reviewer })).action, "continue_turn");
+  await handleEvent(event("user_prompt", { source: "plugin_continuation", userText: "repair" }), ctx);
+  assert.match((await handleEvent(event("response_end"), { ...ctx, reviewer })).notice, /No progress/);
+  f = finding("f", "changed");
+  await handleEvent(event("user_prompt", { source: "plugin_continuation", userText: "repair" }), ctx);
+  assert.equal((await handleEvent(event("response_end"), { ...ctx, reviewer })).action, "continue_turn");
+  f = finding("f", "changed-again");
+  await handleEvent(event("user_prompt", { source: "plugin_continuation", userText: "repair" }), ctx);
+  assert.match((await handleEvent(event("response_end"), { ...ctx, reviewer })).notice, /limit/);
+});
+
+test("a newer event makes an in-flight review stale", async () => {
+  const ctx = await make(); let release; const gate = new Promise((r) => { release = r; });
+  const reviewer = { review: async () => { await gate; return { findings: [finding()] }; } };
+  await handleEvent(event("user_prompt", { source: "host_user", userText: "first" }), ctx);
+  const pending = handleEvent(event("response_end"), { ...ctx, reviewer });
+  await new Promise((r) => setTimeout(r, 10));
+  await handleEvent(event("user_prompt", { source: "host_user", userText: "second" }), ctx);
+  release(); assert.equal((await pending).action, "none");
+});
+
+test("concurrent review calls serialize and never exceed two corrections", async () => {
+  const ctx = await make(); const reviewer = reviewerWith([finding()]);
+  await handleEvent(event("user_prompt", { source: "host_user", userText: "task" }), ctx);
+  const results = await Promise.all(Array.from({ length: 6 }, () => handleEvent(event("response_end"), { ...ctx, reviewer })));
+  assert.ok(results.filter((r) => r.action === "continue_turn").length <= 1);
+  const files = await readdir(ctx.stateDir); const data = JSON.parse(await readFile(join(ctx.stateDir, files.find((x) => x.endsWith(".json"))), "utf8"));
+  assert.ok(data.correctionsDelivered <= 2);
+});
+
+test("state write or corrupt state fails closed as observe-only", async () => {
+  const ctx = await make(); const reviewer = reviewerWith([finding()]);
+  await handleEvent(event("user_prompt", { source: "host_user", userText: "task" }), ctx);
+  const file = join(ctx.stateDir, (await readdir(ctx.stateDir)).find((x) => x.endsWith(".json")));
+  const { writeFile } = await import("node:fs/promises"); await writeFile(file, "{");
+  assert.deepEqual(await handleEvent(event("response_end"), { ...ctx, reviewer }), { action: "none", notice: "Agent Rules state storage is unavailable; review is observe-only." });
+});
+
+test("observe findings never trigger repairs; arrays retain exact evidence and clear requires same-rule evidence", async () => {
+  const ctx = await make(); let current = finding("f", ["exact quote", "second line"], "observe");
+  const reviewer = { review: async () => ({ findings: [current] }) };
+  await handleEvent(event("user_prompt", { source: "host_user", userText: "task" }), ctx);
+  assert.equal((await handleEvent(event("response_end"), { ...ctx, reviewer })).action, "none");
+  current = finding("f", ["exact quote", "second line"], "repair");
+  const repair = await handleEvent(event("response_end"), { ...ctx, reviewer });
+  assert.match(repair.feedback, /exact quote\nsecond line/); assert.match(repair.feedback, /attempt 1\/2/);
+  current = { ruleId: "other", status: "clear", evidence: "checked" };
+  assert.equal((await handleEvent(event("response_end"), { ...ctx, reviewer })).action, "none");
+  assert.equal((await handleEvent(event("response_end"), { ...ctx, reviewer })).notice, undefined);
+  current = { ruleId: "rule", status: "clear", evidence: "checked all relevant content" };
+  assert.match((await handleEvent(event("response_end"), { ...ctx, reviewer })).notice, /no longer present/);
+});
+
+test("interrupt suppresses Stop reviews until a genuine prompt starts a new episode", async () => {
+  const ctx = await make(); let calls = 0;
+  const reviewer = { review: async () => { calls++; return { findings: [finding()] }; } };
+  await handleEvent(event("user_prompt", { source: "host_user", userText: "task" }), ctx);
+  await handleEvent(event("interrupt"), ctx);
+  assert.equal((await handleEvent(event("response_end"), { ...ctx, reviewer })).action, "none"); assert.equal(calls, 0);
+  await handleEvent(event("user_prompt", { source: "host_user", userText: "next" }), ctx);
+  assert.equal((await handleEvent(event("response_end"), { ...ctx, reviewer })).action, "continue_turn");
+});
+
+test("separate Node processes cannot exceed the episode correction cap", async () => {
+  const ctx = await make(); const reviewer = reviewerWith([finding()]);
+  await handleEvent(event("user_prompt", { source: "host_user", userText: "task" }), ctx);
+  const script = `import {handleEvent} from ${JSON.stringify(new URL("../src/runtime.js", import.meta.url).href)}; const reviewer={review:async()=>({findings:[{id:'f',ruleId:'rule',status:'finding',mode:'repair',correction:'fix',evidence:'ev'}]})}; handleEvent({platform:'codex',sessionId:'s',actorId:'main',kind:'response_end'}, {reviewer,policies:[{}],stateDir:${JSON.stringify(ctx.stateDir)}}).then(x=>process.stdout.write(JSON.stringify(x)));`;
+  const run = () => new Promise((resolve, reject) => {
+    const child = spawn(process.execPath, ["--input-type=module", "-e", script]); let out = "";
+    child.stdout.on("data", (d) => out += d); child.on("error", reject); child.on("close", (code) => code ? reject(new Error(`child ${code}`)) : resolve(JSON.parse(out)));
+  });
+  const results = await Promise.all([run(), run()]);
+  assert.ok(results.filter((x) => x.action === "continue_turn").length <= 1);
+});
+
+test("tool start and failed result correlate into a complete receipt for the real reviewer", async () => {
+  const ctx = await make(); let received;
+  const policy = parsePolicy(await readFile(new URL("../policies/test-result-contradiction.md", import.meta.url), "utf8"));
+  const reviewer = createReviewer({ client: { evaluate: async ({ state }) => {
+    received = state;
+    return { answers: { q0: { type: "choice", choice: "contradicted", probabilities: { supported: 0.01, contradicted: 0.98, unknown: 0.005, not_applicable: 0.005 } } } };
+  } } });
+  await handleEvent(event("user_prompt", { source: "host_user", userText: "Run the tests and report the result." }), ctx);
+  await handleEvent(event("tool_start", { tool: { id: "call-1", name: "shell", input: { command: "npm test" }, status: "pending" } }), ctx);
+  await handleEvent(event("tool_result", { tool: { id: "call-1", name: "shell", input: { command: "npm test" }, result: "1 test failed", status: "failure" } }), ctx);
+  const effect = await handleEvent(event("response_end", { response: "All tests passed." }), { ...ctx, policies: [policy], reviewer });
+  assert.equal(received.receipts.length, 1); assert.equal(received.receipts[0].status, "failure");
+  assert.match(effect.feedback, /Correct the conflicting test-result claim/);
+});
+
+test("unchanged array evidence is deduplicated across persisted state reads", async () => {
+  const ctx = await make(); const f = finding("array", [{ id: "response-0", text: "same exact quote" }]); const reviewer = reviewerWith([f]);
+  await handleEvent(event("user_prompt", { source: "host_user", userText: "task" }), ctx);
+  assert.equal((await handleEvent(event("response_end"), { ...ctx, reviewer })).action, "continue_turn");
+  await handleEvent(event("user_prompt", { source: "plugin_continuation", userText: "repair" }), ctx);
+  assert.match((await handleEvent(event("response_end"), { ...ctx, reviewer })).notice, /No progress/);
+});
+
+test("a clear candidate does not resolve a same-rule finding when another candidate still violates", async () => {
+  const ctx = await make(); let findings = [finding("v", "evidence")];
+  const reviewer = { review: async () => ({ findings }) };
+  await handleEvent(event("user_prompt", { source: "host_user", userText: "task" }), ctx);
+  await handleEvent(event("response_end"), { ...ctx, reviewer });
+  findings = [{ id: "clear", ruleId: "rule", status: "clear", evidence: "checked evidence" }, finding("v", "evidence")];
+  const effect = await handleEvent(event("response_end"), { ...ctx, reviewer });
+  assert.match(effect.notice, /No progress/); assert.doesNotMatch(effect.notice, /no longer present/);
+  findings = [{ id: "clear", ruleId: "rule", status: "clear", evidence: "checked evidence" },
+    { id: "unknown", ruleId: "rule", status: "unknown", evidence: [] }];
+  const partialClear = await handleEvent(event("response_end"), { ...ctx, reviewer });
+  assert.equal(partialClear.notice, undefined);
+  const stateFile = join(ctx.stateDir, (await readdir(ctx.stateDir)).find((x) => x.endsWith(".json")));
+  const state = JSON.parse(await readFile(stateFile, "utf8"));
+  assert.ok(Object.values(state.findings).some((f) => f.id === "v" && f.status === "finding"));
+});
+
+test("a Stop hook with missing state cannot renew the correction budget until a genuine prompt", async () => {
+  const ctx = await make(); let calls = 0;
+  const reviewer = { review: async () => { calls++; return { findings: [finding()] }; } };
+  const stop = event("response_end", { stopHookActive: true });
+  assert.match((await handleEvent(stop, { ...ctx, reviewer })).notice, /state is missing/);
+  assert.match((await handleEvent(stop, { ...ctx, reviewer })).notice, /state is missing/);
+  assert.equal(calls, 0);
+  await handleEvent(event("user_prompt", { source: "host_user", userText: "new request" }), ctx);
+  assert.equal((await handleEvent(event("response_end"), { ...ctx, reviewer })).action, "continue_turn");
+});
+
+test("unknown and unavailable health notices appear once per status and report recovery", async () => {
+  const ctx = await make(); let result = { findings: [{ id: "u", ruleId: "r", status: "unknown" }] };
+  const reviewer = { review: async () => result };
+  await handleEvent(event("user_prompt", { source: "host_user", userText: "task" }), ctx);
+  const first = await handleEvent(event("response_end"), { ...ctx, reviewer });
+  assert.match(first.notice, /missing or inconclusive/);
+  assert.equal((await handleEvent(event("response_end"), { ...ctx, reviewer })).notice, undefined);
+  result = { findings: [{ id: "c", ruleId: "r", status: "clear", evidence: "enough evidence" }] };
+  assert.match((await handleEvent(event("response_end"), { ...ctx, reviewer })).notice, /coverage has recovered/);
+});
+
+test("recovered review processes a violation immediately and keeps prior unknown judgments inspectable", async () => {
+  const ctx = await make(); let status = "unknown";
+  const reviewer = { review: async () => ({ model: "test-model", findings: [{
+    id: "finding-1", ruleId: "rule", status, mode: "repair", correction: "fix it",
+    evidence: [{ id: "response-0", text: "exact evidence" }], judgment: { choice: status }, policyHash: "policy-hash",
+  }] }) };
+  await handleEvent(event("user_prompt", { source: "host_user", userText: "task" }), ctx);
+  assert.match((await handleEvent(event("response_end"), { ...ctx, reviewer })).notice, /inconclusive/);
+  const file = join(ctx.stateDir, (await readdir(ctx.stateDir)).find((x) => x.endsWith(".json")));
+  let state = JSON.parse(await readFile(file, "utf8"));
+  assert.ok(Object.values(state.findings).some((f) => f.status === "unknown" && f.judgment.choice === "unknown"));
+  status = "violation";
+  const effect = await handleEvent(event("response_end"), { ...ctx, reviewer });
+  assert.equal(effect.action, "continue_turn");
+  assert.match(effect.feedback, /fix it/);
+  assert.doesNotMatch(effect.notice, /coverage has recovered/);
+  state = JSON.parse(await readFile(file, "utf8"));
+  assert.ok(Object.values(state.findings).some((f) => f.status === "unknown"));
+  assert.ok(Object.values(state.findings).some((f) => f.status === "violation" && f.policyHash === "policy-hash" && f.model === "test-model"));
+});
+
+test("only successful tool results update current code evidence, replacing prior text by path", async () => {
+  const ctx = await make(); const snapshots = [];
+  const reviewer = { review: async (snapshot) => { snapshots.push(snapshot); return { findings: [] }; } };
+  const rules = [{ id: "code" }];
+  await handleEvent(event("user_prompt", { source: "host_user", userText: "Fix the function." }), ctx);
+  await handleEvent(event("tool_start", { tool: { id: "bad", name: "Edit", input: {}, status: "pending" }, changes: [{ path: "src/f.js", text: "bad implementation" }] }), { ...ctx, policies: rules, reviewer });
+  await handleEvent(event("tool_result", { tool: { id: "bad", name: "Edit", input: {}, result: "failed", status: "failure" }, changes: [{ path: "src/f.js", text: "bad implementation" }] }), { ...ctx, policies: rules, reviewer });
+  assert.deepEqual(snapshots.at(-1).changes, []);
+  await handleEvent(event("tool_start", { tool: { id: "good", name: "Edit", input: {}, status: "pending" }, changes: [{ path: "src/f.js", text: "corrected implementation" }] }), { ...ctx, policies: rules, reviewer });
+  await handleEvent(event("tool_result", { tool: { id: "good", name: "Edit", input: {}, result: "written", status: "completed" }, changes: [{ path: "src/f.js", text: "corrected implementation" }] }), { ...ctx, policies: rules, reviewer });
+  await handleEvent(event("response_end"), { ...ctx, policies: rules, reviewer });
+  assert.equal(snapshots.at(-1).changes.length, 1);
+  assert.equal(snapshots.at(-1).changes[0].text, "corrected implementation");
+  assert.doesNotMatch(JSON.stringify(snapshots.at(-1).changes), /bad implementation/);
+});
+
+test("duplicate actionable findings in one result emit only one correction", async () => {
+  const ctx = await make(); const duplicated = finding("duplicate", "same evidence");
+  const reviewer = reviewerWith([duplicated, { ...duplicated }]);
+  await handleEvent(event("user_prompt", { source: "host_user", userText: "task" }), ctx);
+  const effect = await handleEvent(event("response_end"), { ...ctx, reviewer });
+  assert.equal(effect.feedback.match(/Correction:/g).length, 1);
+});
+
+test("finding inspection metadata is retained, history is bounded, and corrections sort by priority", async () => {
+  const ctx = await make();
+  const findings = Array.from({ length: 90 }, (_, i) => ({ ...finding(`f${i}`, `e${i}`),
+    ruleId: `rule-${i}`, priority: i, judgment: { choice: "bad" }, policyHash: `hash-${i}` }));
+  const reviewer = reviewerWith(findings);
+  await handleEvent(event("user_prompt", { source: "host_user", userText: "task" }), ctx);
+  const effect = await handleEvent(event("response_end"), { ...ctx, reviewer, config: { maxCorrectionsPerEpisode: 2 } });
+  assert.ok(effect.feedback.indexOf("rule-89") < effect.feedback.indexOf("rule-88"));
+  const file = join(ctx.stateDir, (await readdir(ctx.stateDir)).find((x) => x.endsWith(".json")));
+  const state = JSON.parse(await readFile(file, "utf8"));
+  assert.equal(Object.keys(state.findings).length, 80);
+  assert.deepEqual(state.findings[Object.keys(state.findings).find((k) => state.findings[k].ruleId === "rule-89")].judgment, { choice: "bad" });
+  assert.equal(state.findings[Object.keys(state.findings).find((k) => state.findings[k].ruleId === "rule-89")].policyHash, "hash-89");
+});

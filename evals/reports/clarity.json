@@ -1,0 +1,248 @@
+{
+  "schema": "agent-rules/evaluation-v1",
+  "createdAt": "2026-09-24T00:31:55.224Z",
+  "live": true,
+  "model": "jev-1.13.0",
+  "policyHashes": [
+    {
+      "id": "communication.unexplained-jargon",
+      "hash": "7abf09298d45f0c869bbd778281a84bc7bafcb6060059644cfdff5bde345756d"
+    }
+  ],
+  "summary": {
+    "total": 5,
+    "passed": 5,
+    "failed": 0,
+    "falsePositives": 0,
+    "falseNegatives": 0,
+    "abstentions": 1,
+    "unavailable": 0,
+    "inputTokens": 2168,
+    "outputTokens": 168
+  },
+  "cases": [
+    {
+      "id": "jargon-clear-1",
+      "labelSource": "generated",
+      "split": "development",
+      "expected": "clear",
+      "actual": "clear",
+      "passed": true,
+      "inputHash": "5a4b43bab8e7e3af9ac2741abeed10723ebf678830d54ade3d1811d7c2f1dfd5",
+      "review": {
+        "findings": [
+          {
+            "id": "7937703cc6beb5255500",
+            "ruleId": "communication.unexplained-jargon",
+            "status": "clear",
+            "evidence": [
+              {
+                "id": "response",
+                "text": "The setting controls how long the app waits before stopping a request."
+              },
+              {
+                "id": "request",
+                "text": "Explain the fix to a beginner"
+              }
+            ],
+            "judgment": {
+              "type": "choice",
+              "choice": "clear",
+              "confidence": 0.68,
+              "probabilities": {
+                "unknown": 0.03,
+                "jargon": 0.18,
+                "clear": 0.79
+              }
+            },
+            "policyHash": "7abf09298d45f0c869bbd778281a84bc7bafcb6060059644cfdff5bde345756d",
+            "correction": "Add a short plain-language explanation of the term where it first matters.",
+            "description": "Explain specialized terms that a general software user needs to act on.",
+            "priority": 20,
+            "mode": "observe"
+          }
+        ],
+        "usage": {
+          "input_tokens": 540,
+          "output_tokens": 41
+        },
+        "model": "jev-1.13.0",
+        "elapsedMs": 750
+      }
+    },
+    {
+      "id": "jargon-positive-lru",
+      "labelSource": "generated",
+      "split": "development",
+      "expected": "violation",
+      "actual": "violation",
+      "passed": true,
+      "inputHash": "10582fcd7554afbd286cf50f20b9bf1f60be3aeb4c06bf202b1670657913f1a5",
+      "review": {
+        "findings": [
+          {
+            "id": "6dbd282e4ed185da5f76",
+            "ruleId": "communication.unexplained-jargon",
+            "status": "violation",
+            "evidence": [
+              {
+                "id": "response",
+                "text": "The cache uses LRU eviction and a TTL."
+              },
+              {
+                "id": "request",
+                "text": "Explain this to a new programmer"
+              }
+            ],
+            "judgment": {
+              "type": "choice",
+              "choice": "jargon",
+              "confidence": 0.99,
+              "probabilities": {
+                "clear": 0,
+                "jargon": 1,
+                "unknown": 0
+              }
+            },
+            "policyHash": "7abf09298d45f0c869bbd778281a84bc7bafcb6060059644cfdff5bde345756d",
+            "correction": "Add a short plain-language explanation of the term where it first matters.",
+            "description": "Explain specialized terms that a general software user needs to act on.",
+            "priority": 20,
+            "mode": "observe"
+          }
+        ],
+        "usage": {
+          "input_tokens": 534,
+          "output_tokens": 43
+        },
+        "model": "jev-1.13.0",
+        "elapsedMs": 676
+      }
+    },
+    {
+      "id": "jargon-positive-idempotent",
+      "labelSource": "generated",
+      "split": "development",
+      "expected": "violation",
+      "actual": "violation",
+      "passed": true,
+      "inputHash": "648dbed5c8360ea6315f05407e967dabd0804a29107da4b99740fe62be13c213",
+      "review": {
+        "findings": [
+          {
+            "id": "70ce475334be06b4dbc4",
+            "ruleId": "communication.unexplained-jargon",
+            "status": "violation",
+            "evidence": [
+              {
+                "id": "response",
+                "text": "Set the idempotency key so retries do not create duplicate charges."
+              },
+              {
+                "id": "request",
+                "text": "Explain the deployment setting to a nontechnical user"
+              }
+            ],
+            "judgment": {
+              "type": "choice",
+              "choice": "jargon",
+              "confidence": 0.98,
+              "probabilities": {
+                "jargon": 0.99,
+                "clear": 0.01,
+                "unknown": 0
+              }
+            },
+            "policyHash": "7abf09298d45f0c869bbd778281a84bc7bafcb6060059644cfdff5bde345756d",
+            "correction": "Add a short plain-language explanation of the term where it first matters.",
+            "description": "Explain specialized terms that a general software user needs to act on.",
+            "priority": 20,
+            "mode": "observe"
+          }
+        ],
+        "usage": {
+          "input_tokens": 548,
+          "output_tokens": 43
+        },
+        "model": "jev-1.13.0",
+        "elapsedMs": 278
+      }
+    },
+    {
+      "id": "jargon-explained-term",
+      "labelSource": "generated",
+      "split": "development",
+      "expected": "clear",
+      "actual": "clear",
+      "passed": true,
+      "inputHash": "8919a11dc060a70c9ca57ca10cfddf07f82db7fad5c48251e3190696f47e598c",
+      "review": {
+        "findings": [
+          {
+            "id": "8f97df506377299e84e4",
+            "ruleId": "communication.unexplained-jargon",
+            "status": "clear",
+            "evidence": [
+              {
+                "id": "response",
+                "text": "The cache uses LRU, meaning it removes the least recently used item first."
+              },
+              {
+                "id": "request",
+                "text": "Explain the fix to a beginner"
+              }
+            ],
+            "judgment": {
+              "type": "choice",
+              "choice": "clear",
+              "confidence": 0.66,
+              "probabilities": {
+                "unknown": 0.02,
+                "jargon": 0.21,
+                "clear": 0.77
+              }
+            },
+            "policyHash": "7abf09298d45f0c869bbd778281a84bc7bafcb6060059644cfdff5bde345756d",
+            "correction": "Add a short plain-language explanation of the term where it first matters.",
+            "description": "Explain specialized terms that a general software user needs to act on.",
+            "priority": 20,
+            "mode": "observe"
+          }
+        ],
+        "usage": {
+          "input_tokens": 546,
+          "output_tokens": 41
+        },
+        "model": "jev-1.13.0",
+        "elapsedMs": 273
+      }
+    },
+    {
+      "id": "jargon-no-audience",
+      "labelSource": "generated",
+      "split": "development",
+      "expected": "unknown",
+      "actual": "unknown",
+      "passed": true,
+      "inputHash": "82742bcf7cdca8ab41297fc3b1eaf6f2f9a61b8bbc31cb2f17c43ebf8d7d8481",
+      "review": {
+        "findings": [
+          {
+            "id": "68b6984794f5e7e5a659",
+            "ruleId": "communication.unexplained-jargon",
+            "status": "unknown",
+            "evidence": [],
+            "judgment": null,
+            "policyHash": "7abf09298d45f0c869bbd778281a84bc7bafcb6060059644cfdff5bde345756d",
+            "correction": "Add a short plain-language explanation of the term where it first matters.",
+            "description": "Explain specialized terms that a general software user needs to act on.",
+            "priority": 20,
+            "mode": "observe"
+          }
+        ],
+        "model": "jev-1.13.0",
+        "elapsedMs": 1
+      }
+    }
+  ]
+}

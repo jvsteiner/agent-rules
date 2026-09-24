@@ -1,0 +1,16 @@
+---
+name: author-rule
+description: Create, validate, calibrate, and enable Agent Rules policies from a user's concrete behavioral preference. Use when the user asks to add or refine a behavior rule; do not use for ordinary code checks or generic policy writing.
+---
+
+# Author an Agent Rules policy
+
+Turn the user's preference into one narrow, observable check that can be judged from the available request, response, execution receipts, code changes, thinking, or constraints. Ask only for details needed to distinguish a violation from a reasonable exception. Do not broaden a preference into a judgment of intent or personality.
+
+Read [references/policy-format.md](references/policy-format.md) when creating or changing a policy or its fixtures. Write the Markdown policy in the project's configured policy directory. Keep `Why` explanatory; put all classifier-relevant distinctions in the detector instructions and criteria. Make the Correction section actionable and faithful to the user's requested behavior.
+
+Validate the policy with `node <plugin-root>/dist/agent-rules.js validate <policy-file>`. Create JSONL examples from realistic snapshots, including clear, violating, and ambiguous cases where applicable. Mark generated labels as generated; never imply a generated label was reviewed by a person. Use development examples while refining, then evaluate against a separate holdout set. Use replay reports to compare revisions when available.
+
+Use `evaluate --fixtures <file>` for saved examples. Use `evaluate --live` only when live evaluation is useful and consistent with the user's request; this can send selected evidence to the configured model. An explicit `--env-file <path>` may load credentials for that run. Never auto-load a repository `.env`, expose secret values, or write credentials into policies or reports. `--config <path>` selects an explicit configuration.
+
+New rules start in `observe` unless the user explicitly asks to enable correction. After validation, evaluation, and any requested calibration, honor an explicit request to create and enable the policy by running `set-mode <id> repair`; do not add an approval step for routine local policy edits. If evidence is too weak or evaluation finds false positives, keep it in observe and explain the limitation. Use `inspect <id>` and `status` to report the effective policy and current mode. The CLI also supports `compare --replay <report>` and `evaluate --out <report>` for recorded evaluation workflows.

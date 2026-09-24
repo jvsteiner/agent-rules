@@ -1,12 +1,26 @@
 {
   "name": "agent-rules",
-  "version": "0.1.0",
-  "description": "One set of rule files, read by both omp and Claude Code",
+  "version": "0.2.0",
+  "description": "Visible behavioral corrections for Claude Code and Codex, powered by Jev",
   "license": "MIT",
   "author": "Jamie Steiner",
   "type": "module",
   "private": true,
   "scripts": {
-    "test": "node --test test/"
+    "test": "node --test test/*.test.js",
+    "build": "node tools/build.mjs",
+    "test:coverage": "node --test --experimental-test-coverage test/*.test.js",
+    "probe:claude": "node tools/host-probe.mjs claude",
+    "probe:codex": "node tools/host-probe.mjs codex",
+    "pretest": "npm run build"
+  },
+  "dependencies": {
+    "yaml": "2.9.1"
+  },
+  "devDependencies": {
+    "esbuild": "0.28.2"
+  },
+  "engines": {
+    "node": ">=20.12"
   }
 }

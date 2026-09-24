@@ -1,127 +1,124 @@
 # agent-rules
 
-One set of rule files. Two readers.
+Editable behavioral policies for Claude Code and Codex. Jev evaluates the work;
+the coding agent receives a specific correction and gets another attempt.
 
-A rule says "do not write this, write that instead". When a coding agent is
-about to write code that matches it, the agent gets told — in the same turn,
-before the mistake reaches a pull request.
+Automatic semantic feedback is limited to two deliveries per user episode.
+Findings, evidence, and rechecks are inspectable. The original ten regex code
+rules remain supported without a TypeSafe key.
 
-[omp](https://www.npmjs.com/package/@oh-my-pi/pi-coding-agent) has this
-built in and calls it TTSR. Claude Code does not, but its hooks can reproduce
-the part that matters. This repository holds the rules, and the Claude Code
-plugin that reads them.
+## Quick start
 
-**The format is omp's, unchanged.** So omp needs nothing from this repository
-beyond the files themselves.
-
----
-
-## State
-
-| | |
-|---|---|
-| Rule loader and matcher | **Built** |
-| The ten starter rules | **Written**, each with a firing case and a quiet case |
-| Claude Code plugin and hooks | **Built**, ~29 ms per write |
-| Installer | Not built — one symlink, see below |
-| Live test harness | **Built** — `live-test/` |
-
-56 tests.
-
-The design is [`docs/2026-09-11-agent-rules-design.md`](docs/2026-09-11-agent-rules-design.md).
-
-The proposed next version adds Jev-based behavior checks, LLM-assisted rule
-authoring, and Codex support. See the [behavior steering design](docs/2026-09-24-behavior-steering-design.md)
-and [supporting research](docs/2026-09-24-jev-behavior-steering-research.md).
-These documents describe planned work, not the current implementation.
+Node 20.12 or newer is required. Committed `dist/` bundles include the runtime
+and YAML dependency; installed hooks never download packages.
 
 ```sh
-npm test                                  # 56 tests
-node tools/smoke.mjs                      # is the hook wired up? (works from anywhere)
-node tools/dryrun.mjs ~/Code/some-repo    # what would the rules fire on?
+npm ci
+npm test
+node dist/agent-rules.js status --env-file .env
+node tools/with-key.mjs .env claude --plugin-dir .
 ```
 
-[`live-test/`](live-test/README.md) is a clean sample project and a cut sheet —
-one row per rule, what to say to the agent, and what should happen.
+The explicit launcher parses the specified `.env` and passes `TYPESAFE_API_KEY`
+to the agent. It never evaluates the file as shell code. Hooks normally use the
+agent process environment and never automatically load a target project's `.env`.
+This checkout's `.env` is ignored by Git.
 
-No dependencies, no build step. Node 20 or newer.
+For normal Claude installation, add this checkout as a marketplace and install
+`agent-rules@agent-rules`. Codex packaging is in `plugin.json` and
+`.codex-plugin/plugin.json`; install through a configured marketplace and review
+its hooks with `/hooks`. Installation does not bypass host trust review.
 
-## Install
+For direct Codex hook setup, use `hooks/codex.json`, replacing `${PLUGIN_ROOT}`
+with the absolute checkout path when configuring hooks outside a plugin.
+The platform manifests select separate hook files. Default `hooks/hooks.json`
+is intentionally empty to avoid duplicate registration. The original
+`bin/agent-rules-hook.js` remains usable for legacy omp-compatible setups.
 
-One symlink, into the **global** rule directory — the one omp's own menu calls
-*"Global — all projects"*. Rules then apply in every repository on the machine,
-and nothing is written into any repository:
+## Authoring and configuration
+
+Ask the agent to use the **author-rule** skill to turn a preference into a Markdown
+policy, Jev questions, examples, and an evaluation report. Generated labels remain
+identified as generated; they are not claimed to be human validation.
+
+Policies load from bundled `policies/`, `~/.config/agent-rules/rules/`, then
+`<project>/.agent-rules/rules/`. Later IDs override earlier ones. An invalid
+override disables its ID and produces diagnostics.
+
+Configuration lives in `~/.config/agent-rules/config.json` or project
+`.agent-rules/config.json`:
+
+```json
+{
+  "schema": "agent-rules/config-v1",
+  "model": "jev-1.13.0",
+  "reviewDeadlineMs": 2000,
+  "maxCorrectionsPerEpisode": 2,
+  "rules": {
+    "reporting.test-result-contradiction": "repair",
+    "communication.unexplained-jargon": "observe",
+    "reporting.premature-completion": "observe"
+  }
+}
+```
+
+`repair` evaluates and corrects, `observe` records without steering, and `off`
+skips the policy. Broader starter policies remain observe-only while their useful
+operating thresholds are evaluated. Probabilities do not establish intent.
 
 ```sh
-ln -s ~/Code/agent-rules/rules ~/.omp/agent/rules
+node dist/agent-rules.js validate policies
+node dist/agent-rules.js evaluate policies/test-result-contradiction.md \
+  --fixtures policies/test-result-contradiction.cases.jsonl \
+  --live --env-file .env --out /tmp/report.json
+node dist/agent-rules.js evaluate policies/test-result-contradiction.md \
+  --fixtures policies/test-result-contradiction.cases.jsonl --replay /tmp/report.json
+node dist/agent-rules.js compare /tmp/before.json /tmp/after.json
+node dist/agent-rules.js inspect reporting.test-result-contradiction
+node dist/agent-rules.js set-mode communication.unexplained-jargon repair --scope project
 ```
 
-If that path already exists as a real directory, `ln -s` will nest the link
-inside it. Check first:
+Offline evaluation requires a matching replay and never silently calls Jev.
+Reports bind results to model, policy hash, and evidence; mismatches with fixture
+labels produce a nonzero exit, including unexpected abstentions.
+See the [policy format](skills/author-rule/references/policy-format.md).
+
+## Verification and actual limits
+
+Deterministic tests cover legacy rules, catalogs, transport, real hook subprocesses,
+concurrent journals, correction budgets, stale results, service failures, and
+copied bundles running without `node_modules`. CI uses Node 20 and 24.
+
+Explicit live probes use authenticated accounts and small synthetic tasks in
+isolated temporary workspaces; they do not install global hooks:
 
 ```sh
-ls -ld ~/.omp/agent/rules      # expect: No such file or directory
+node tools/host-probe.mjs claude --live --env-file .env
+node tools/host-probe.mjs codex --live --env-file .env
+node tools/host-probe.mjs codex --live --receipts --env-file .env
 ```
 
-Then add the Claude Code plugin from the checkout:
+Both CLIs have completed Jev-triggered corrections and rechecks. Claude's headless
+stream displays notices. The tested Codex `exec --json` omits `systemMessage`,
+although correction works; use `inspect` for findings. Interactive/desktop notice
+rendering has not been confirmed here.
 
-```
-/plugin marketplace add ~/Code/agent-rules
-/plugin install agent-rules@agent-rules
-```
+The engine accepts explicitly exposed thinking segments with provenance and
+completeness labels. Ordinary hook payloads observed in both hosts contain no
+thinking text; automatic transcript extraction is not claimed. Semantic code
+checks cover supported direct edits/patches, not universal shell-write attribution.
+Curated generated cases demonstrate particular behavior, not general accuracy.
 
-The plugin reads the same two directories omp does, so both agents behave the
-same way. Until the symlink exists, the hook finds no rules and stays silent.
+Selected response/code/evidence is sent to TypeSafe. Obvious secret patterns are
+redacted; this is not comprehensive data-loss prevention. Journals have private
+file permissions, bounded history, and cleanup of expired/excess inactive snapshots.
 
----
+## Documents
 
-## A rule
+- [Implementation plan](docs/2026-09-24-implementation-plan.md)
+- [Implementation evidence and limitations](docs/2026-09-24-implementation-results.md)
+- [Design](docs/2026-09-24-behavior-steering-design.md)
+- [Research](docs/2026-09-24-jev-behavior-steering-research.md)
+- [Original regex/omp design](docs/2026-09-11-agent-rules-design.md)
 
-```yaml
----
-description: "Do not use `await import()` — use static imports"
-condition: "await import\\("
-scope: "tool:edit(*.ts), tool:write(*.ts)"
-interruptMode: never
----
-
-Use static imports for modules known at author time.
-
-## Why
-- Static imports fail during build, not under load.
-
-## Exceptions
-- Plugin loading from a runtime registry.
-```
-
-`condition` is a regex, matched against **only the text the agent is adding** —
-never the file on disk, and never the text being removed. `scope` says which
-tool and which files. The body is what the agent is told when the rule fires.
-
-`interruptMode: never` — the default, and what every omp builtin uses — lets
-the write land and tells the agent afterwards, so it fixes the line in the same
-turn. Anything else stops the write and asks a person.
-
----
-
-## Where rules live
-
-Both readers look in the same two places, in this order:
-
-| Level | Path | Scope |
-|---|---|---|
-| Global | `~/.omp/agent/rules/*.md` | Every repository on the machine |
-| Project | `<repo>/.omp/rules/*.md` | That repository only |
-
-A project rule replaces a global one of the same name.
-
-Project rules should not be committed, because colleagues do not have this
-plugin and should not receive an unexplained `.omp/` folder. Put the ignore in
-`.git/info/exclude`, **not** `.gitignore` — `.gitignore` is itself tracked, so
-editing it is a change other people see.
-
----
-
-## Licence
-
-MIT.
+MIT licensed.
