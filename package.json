@@ -1,6 +1,6 @@
 {
   "name": "agent-rules",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "Visible behavioral corrections for Claude Code and Codex, powered by Jev",
   "license": "MIT",
   "author": "Jamie Steiner",
@@ -9,6 +9,7 @@
   "scripts": {
     "test": "node --test test/*.test.js",
     "build": "node tools/build.mjs",
+    "version": "npm run build",
     "test:coverage": "node --test --experimental-test-coverage test/*.test.js",
     "probe:claude": "node tools/host-probe.mjs claude",
     "probe:codex": "node tools/host-probe.mjs codex",

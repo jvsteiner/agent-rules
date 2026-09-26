@@ -7,7 +7,7 @@
   "plugins": [
     {
       "name": "agent-rules",
-      "version": "0.2.0",
+      "version": "0.2.1",
       "source": "./",
       "description": "Visible behavioral corrections for Claude Code and Codex, powered by Jev",
       "author": {
