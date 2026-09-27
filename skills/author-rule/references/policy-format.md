@@ -45,11 +45,20 @@ Explain the user value of the rule.
 Give a direct instruction for fixing this finding using the available evidence.
 ```
 
-Use only evidence groups available to the runtime: `request`, `response`, `receipts`, `changes`, `thinking`, and `constraints`. Events include `response_end`, `tool_result`, `user_prompt`, and other normalized event names; targets are `response`, `response_span`, `code_change`, `thinking`, or `thinking_span`. Keep `events`, `requires`, and detector criteria specific to the rule.
+Use only evidence groups available to the runtime: `request`, `response`, `receipts`, `changes`, `thinking`, and `constraints`. Keep `events`, `requires`, and detector criteria specific to the rule. Choose the check point from when the rule can act:
+
+| `events` | `target` | Checks | A `repair` finding |
+|---|---|---|---|
+| `user_prompt` | `request` | The user's request, before the agent starts | Adds the correction as context. In `block` mode, rejects the prompt so the model never sees it |
+| `tool_start` | `tool_call` | The pending tool call: tool name and input | Denies the call, and the agent receives the correction. Applies to every matching call |
+| `tool_result` | `code_change` | A completed edit | Adds the correction as context |
+| `response_end` | `response`, `response_span`, `thinking`, `thinking_span` | The finished reply | Stops the turn, and the agent rewrites the reply |
+
+Prompt and pre-tool checks add a Jev request, about two seconds, to every prompt or tool call, and run only when an enabled policy uses them. A topic rule usually needs a `request` policy to stop work early and a `response` policy for replies that drift onto the topic; add a `tool_call` policy when the agent could act on the topic without being asked. All three hosts (Claude Code, Codex, and omp) support every check point. For `tool_call`, leave `requires` empty; the pending call is the evidence.
 
 For Jev detectors, `question.type` is `choice`, `noul`, or `score`; instructions are currently authored as a string. Choice criteria are a map of option names to descriptions. Noul criteria may be omitted or describe `true` and/or `false`; decision thresholds are `violation_at_or_above` and `clear_at_or_below`, with the clear threshold lower than the violation threshold. Score criteria are an ordered array of 2–10 level descriptions. Score decisions use `violation_levels` and `clear_levels` containing zero-based level indices as strings (for example `['2']`), plus `min_probability` from 0 to 1. The two level sets must not overlap. Regex detectors use `type: regex`, a JavaScript `pattern`, and optional `flags`.
 
-`intervention` is `observe` or `repair`; it defaults to observe. Repair policies need a nonempty `## Correction` section. The section ends at the next level-two heading. Do not put credentials, shell commands, interpolation, or arbitrary filesystem requests in policy text. Probability thresholds are authored policy settings, not claims of human calibration.
+`intervention` is `observe`, `repair`, or `block`; it defaults to observe. Repair and block policies need a nonempty `## Correction` section. The section ends at the next level-two heading. Do not put credentials, shell commands, interpolation, or arbitrary filesystem requests in policy text. Probability thresholds are authored policy settings, not claims of human calibration.
 
 ## JSONL evaluation fixtures
 

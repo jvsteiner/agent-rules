@@ -75,15 +75,13 @@ export function encode(platform, effect = {}) {
   const message = [effect.notice, effect.feedback].filter(Boolean).join("\n\n");
   if (!message) return {};
   if (action === "none") return effect.notice ? { systemMessage: effect.notice } : {};
-  if (platform === "claude") {
-    if (action === "continue_turn") return { decision: "block", reason: effect.feedback ?? effect.notice, systemMessage: effect.notice };
-    return { hookSpecificOutput: { hookEventName: "PostToolUse", additionalContext: effect.feedback ?? effect.notice }, systemMessage: effect.notice };
-  }
-  if (platform === "codex") {
-    if (action === "continue_turn") return { decision: "block", reason: effect.feedback ?? effect.notice, systemMessage: effect.notice };
-    return { hookSpecificOutput: { hookEventName: "PostToolUse", additionalContext: effect.feedback ?? effect.notice }, systemMessage: effect.notice };
-  }
-  return {};
+  if (!["claude", "codex"].includes(platform)) return {};
+  // Claude Code and Codex accept the same hook output shapes.
+  if (action === "block_prompt") return { decision: "block", reason: effect.feedback ?? effect.notice, systemMessage: effect.notice };
+  if (action === "deny_tool") return { hookSpecificOutput: { hookEventName: "PreToolUse", permissionDecision: "deny", permissionDecisionReason: effect.feedback ?? effect.notice }, systemMessage: effect.notice };
+  const hookEventName = { user_prompt: "UserPromptSubmit", tool_start: "PreToolUse" }[effect.event] ?? "PostToolUse";
+  if (action === "continue_turn") return { decision: "block", reason: effect.feedback ?? effect.notice, systemMessage: effect.notice };
+  return { hookSpecificOutput: { hookEventName, additionalContext: effect.feedback ?? effect.notice }, systemMessage: effect.notice };
 }
 
 export const claude = { decode: (payload) => decode("claude", payload), encode: (effect) => encode("claude", effect) };

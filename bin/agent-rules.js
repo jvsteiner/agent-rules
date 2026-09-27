@@ -49,7 +49,7 @@ async function main(){
  if(command==='compare'){output(compareReports(await readJSON(args[0]),await readJSON(args[1])));return;}
  if(command==='set-mode'){
   const scope=option('--scope')??'project';const [id,mode]=args;
-  if(!/^[\w.-]+$/.test(id??'')||!['off','observe','repair'].includes(mode)||!['project','user'].includes(scope))throw new Error('set-mode <rule-id> off|observe|repair --scope user|project');
+  if(!/^[\w.-]+$/.test(id??'')||!['off','observe','repair','block'].includes(mode)||!['project','user'].includes(scope))throw new Error('set-mode <rule-id> off|observe|repair|block --scope user|project');
   const path=resolve(configPath??(scope==='user'?join(homedir(),'.config/agent-rules/config.json'):join(process.cwd(),'.agent-rules/config.json')));
   let data;try{data=await readJSON(path);}catch(e){if(e.code!=='ENOENT')throw e;data={schema:'agent-rules/config-v1'};}
   data.rules={...data.rules,[id]:mode};await mkdir(dirname(path),{recursive:true});const temp=`${path}.${process.pid}.tmp`;

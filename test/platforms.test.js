@@ -31,5 +31,10 @@ test("encoders use Stop continuation and PostToolUse advisory context", () => {
   assert.equal(encode("claude", { action: "continue_turn", feedback: "fix", notice: "notice" }).decision, "block");
   assert.equal(encode("codex", { action: "add_context", feedback: "keep", notice: "seen" }).hookSpecificOutput.additionalContext, "keep");
   assert.deepEqual(encode("codex", { action: "none" }), {});
+  for (const platform of ["claude", "codex"]) {
+    assert.deepEqual(encode(platform, { action: "deny_tool", event: "tool_start", feedback: "no", notice: "n" }).hookSpecificOutput,
+      { hookEventName: "PreToolUse", permissionDecision: "deny", permissionDecisionReason: "no" });
+    assert.equal(encode(platform, { action: "add_context", event: "user_prompt", feedback: "ctx", notice: "n" }).hookSpecificOutput.hookEventName, "UserPromptSubmit");
+  }
   assert.deepEqual(encode("codex", { action: "none", notice: "resolved" }), { systemMessage: "resolved" });
 });

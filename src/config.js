@@ -22,7 +22,7 @@ function validateLayer(raw, source, diagnostics) {
     else {
       valid.rules = {};
       for (const [id, mode] of Object.entries(raw.rules)) {
-        if (!/^[\w.-]+$/.test(id) || !['off', 'observe', 'repair'].includes(mode)) diagnostics.push({ source, message: `invalid rule mode entry for ${id}` });
+        if (!/^[\w.-]+$/.test(id) || !['off', 'observe', 'repair', 'block'].includes(mode)) diagnostics.push({ source, message: `invalid rule mode entry for ${id}` });
         else valid.rules[id] = mode;
       }
     }

@@ -2,7 +2,7 @@ import { build } from 'esbuild';
 import { cp, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 // Keep the checkout's existing marketplace metadata in sync with its package.
 const pkg=JSON.parse(await readFile('package.json','utf8'));
-for(const file of ['plugin.json','.claude-plugin/plugin.json','.codex-plugin/plugin.json']){
+for(const file of ['.claude-plugin/plugin.json','.codex-plugin/plugin.json']){
   const manifest=JSON.parse(await readFile(file,'utf8'));
   manifest.version=pkg.version;
   await writeFile(file,JSON.stringify(manifest,null,2)+'\n');
@@ -15,6 +15,6 @@ await build({entryPoints:{'behavior-hook':'bin/behavior-hook.js','agent-rules':'
 // Assemble the installable plugin: only what the hooks, CLI, and skills load at run time.
 await rm('plugin',{recursive:true,force:true});
 await mkdir('plugin');
-for(const path of ['.claude-plugin/plugin.json','.codex-plugin/plugin.json','plugin.json','hooks','dist','policies','rules','skills','omp','README.md','LICENSE'])
+for(const path of ['.claude-plugin/plugin.json','.codex-plugin/plugin.json','hooks','dist','policies','rules','skills','omp','README.md','LICENSE'])
   await cp(path,`plugin/${path}`,{recursive:true});
 await writeFile('plugin/package.json',JSON.stringify({name:pkg.name,version:pkg.version,type:'module',license:pkg.license},null,2)+'\n');

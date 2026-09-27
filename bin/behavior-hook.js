@@ -29,7 +29,7 @@ async function main(){
   const firing=[...hits.values()].filter(f=>f.delivery===(event.kind==='tool_start'?'pre':'post'));
   if(firing.length){
    const feedback=firing.map(f=>`[${f.name}] ${f.description}\n${f.body}`).join('\n\n').slice(0,8000);
-   if(event.kind==='tool_start'&&platform==='claude'){process.stdout.write(JSON.stringify({hookSpecificOutput:{hookEventName:'PreToolUse',permissionDecision:'ask',permissionDecisionReason:feedback}}));return;}
+   if(event.kind==='tool_start'&&platform==='claude'&&effect.action!=='deny_tool'){process.stdout.write(JSON.stringify({hookSpecificOutput:{hookEventName:'PreToolUse',permissionDecision:'ask',permissionDecisionReason:feedback}}));return;}
    if(event.kind==='tool_result')effect={action:'add_context',notice:'Agent Rules: deterministic code policy matched.',feedback:[effect.feedback,feedback].filter(Boolean).join('\n\n')};
   }
  }

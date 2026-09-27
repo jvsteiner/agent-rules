@@ -28,6 +28,8 @@ function claudeTool(name, rawInput) {
   return { tool_name: String(name), tool_input: input };
 }
 
+const context = (reply) => reply.hookSpecificOutput?.additionalContext;
+
 function run(hook, payload) {
   return new Promise((resolve) => {
     // omp enforces the regex rules itself (TTSR); the hook reviews Jev policies only.
@@ -51,21 +53,47 @@ export function createExtension(hook) {
     }
 
     pi.on('session_start', async (_event, ctx) => { await send('SessionStart', {}, ctx); });
-    // before_agent_start fires for every prompt in every mode; `input` is interactive-only.
+    // A rejected prompt stays on screen above the editor until the next prompt.
+    const showBlock = (ctx, reason) => { if (ctx.hasUI) ctx.ui.setWidget('agent-rules', [reason, 'Edit the request, or change the rule with: agent-rules set-mode <rule> <mode>'], { placement: 'aboveEditor' }); };
+    const clearBlock = (ctx) => { if (ctx.hasUI) ctx.ui.setWidget('agent-rules', undefined); };
+
+    // Interactive prompts are reviewed at `input`, which can swallow a rejected prompt. Other modes
+    // (print, rpc) reach only before_agent_start, which reviews the prompt and aborts on a block.
+    let reviewed;
+    pi.on('input', async (event, ctx) => {
+      if (event.source === 'extension' || typeof event.text !== 'string') return undefined;
+      clearBlock(ctx);
+      const reply = await send('UserPromptSubmit', { prompt: event.text }, ctx);
+      if (reply.decision === 'block') { showBlock(ctx, reply.reason); return { handled: true }; }
+      reviewed = { text: event.text.trim().slice(0, 80), reply };
+      return undefined;
+    });
+
     // A prompt that repeats our own correction is its continuation, not a new request.
     let pendingCorrection;
     pi.on('before_agent_start', async (event, ctx) => {
       const prompt = typeof event.prompt === 'string' ? event.prompt : '';
       const continuation = pendingCorrection !== undefined && prompt.includes(pendingCorrection);
       pendingCorrection = undefined;
-      if (!continuation) await send('UserPromptSubmit', { prompt }, ctx);
+      const early = reviewed && prompt.includes(reviewed.text) ? reviewed.reply : undefined;
+      reviewed = undefined;
+      if (continuation) return undefined;
+      const reply = early ?? await send('UserPromptSubmit', { prompt }, ctx);
+      if (reply.decision === 'block') { showBlock(ctx, reply.reason); ctx.abort(); return undefined; }
+      return context(reply) ? { message: { customType: 'agent-rules', content: context(reply), display: true } } : undefined;
     });
     pi.on('tool_call', async (event, ctx) => {
-      await send('PreToolUse', { tool_use_id: event.toolCallId, ...claudeTool(event.toolName, event.input) }, ctx);
+      const reply = await send('PreToolUse', { tool_use_id: event.toolCallId, ...claudeTool(event.toolName, event.input) }, ctx);
+      const output = reply.hookSpecificOutput ?? {};
+      if (output.permissionDecision === 'deny') return { block: true, reason: output.permissionDecisionReason };
+      return undefined;
     });
     pi.on('tool_result', async (event, ctx) => {
-      await send(event.isError ? 'PostToolUseFailure' : 'PostToolUse',
+      const reply = await send(event.isError ? 'PostToolUseFailure' : 'PostToolUse',
         { tool_use_id: event.toolCallId, ...claudeTool(event.toolName, event.input), tool_response: text(event.content) }, ctx);
+      // omp has no separate context channel here, so the note is appended to the tool result the model reads.
+      if (context(reply)) return { content: [...(Array.isArray(event.content) ? event.content : []), { type: 'text', text: context(reply) }] };
+      return undefined;
     });
     pi.on('session_stop', async (event, ctx) => {
       const reply = await send('Stop', { last_assistant_message: text(event.last_assistant_message), stop_hook_active: event.stop_hook_active }, ctx);

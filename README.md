@@ -93,11 +93,36 @@ Configuration lives in `~/.config/agent-rules/config.json` or project
 }
 ```
 
-`repair` evaluates and corrects. `observe` evaluates and records without
-steering: when an observe policy first fires on new evidence, the user sees
-`Agent Rules (observe): <rule> would have fired.` and the agent receives nothing.
-`off` skips the policy. Broader starter policies remain observe-only while their useful
+Each policy has one of four modes:
+
+- `off`: the policy does not run.
+- `observe`: the policy runs and records. When it first fires on new evidence,
+  the user sees `Agent Rules (observe): <rule> would have fired.` and the agent
+  receives nothing.
+- `repair`: the agent receives the correction and fixes its work.
+- `block`: like `repair`, and a request policy also rejects the prompt, so the
+  model never sees it. Use it when the model must not act on a request at all;
+  a correction is advice that a model can ignore.
+ Broader starter policies remain observe-only while their useful
 operating thresholds are evaluated. Probabilities do not establish intent.
+
+A policy's `events` and `target` choose when it acts, in Claude Code, Codex, and
+omp alike:
+
+- `user_prompt` + `request`: checks the request before work starts; a repair
+  finding adds the correction as context, and a block finding rejects the
+  prompt.
+- `tool_start` + `tool_call`: checks each tool call before it runs; a repair or
+  block finding denies the call. Denials repeat for every matching call and do
+  not use up the correction limit.
+- `tool_result` + `code_change`: checks completed edits; a repair finding adds
+  context.
+- `response_end` + `response`: checks the finished reply; a repair finding stops
+  the turn for a rewrite.
+
+Prompt and pre-tool checks cost one Jev request per prompt or tool call and run
+only when an enabled policy uses them. Rewrites and added context share the
+per-request correction limit; rejected prompts and denied tool calls do not.
 
 ```sh
 node dist/agent-rules.js validate policies

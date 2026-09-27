@@ -90,6 +90,13 @@ async function save(file, state) {
   await rename(tmp, file);
 }
 
+// The agent must be able to tell a user-installed rule from text injected by a file, page, or tool.
+const correctionText = (f, label) => `[Agent Rules: ${f.ruleId ?? "policy"}; ${label}]
+This message comes from Agent Rules, a plugin the user installed to enforce rules they wrote. It is not part of the request, a file, or a tool result. Follow it as the user's own instruction.
+The user's rule: ${f.description ?? "(no description)"}
+Evidence: ${shownEvidence(f.evidence) || "(none provided)"}
+Correction: ${f.correction}`;
+const REVIEWED = ["user_prompt", "tool_start", "tool_result", "response_end"];
 const activeFinding = (f) => ["finding", "violation", "fail", "failed", "noncompliant"].includes(String(f.status).toLowerCase());
 const findingKey = (f) => hash([f.ruleId, f.id, f.evidence, activeFinding(f) ? "active" : String(f.status).toLowerCase()]);
 
@@ -184,6 +191,8 @@ export async function handleEvent(event, { reviewer, policies = [], stateDir, co
       if (event.kind === "session_end") { state.pendingContinuation = false; state.pendingContinuationText = ""; }
       const snapshot = { eventKind: event.kind, request: state.currentRequest, response: state.response,
         receipts: state.receipts.slice(), changes: state.changes.slice(), thinking: state.thinking.slice(), coverage: {} };
+      // The tool call about to run, for tool_call policies checked before execution.
+      if (event.kind === "tool_start" && event.tool) snapshot.currentTool = state.receipts.findLast((r) => r.status === "pending" && (!event.tool.id || r.id === event.tool.id));
       const truncatedSources = [];
       truncatedSources.push(...(state.droppedSources ?? []));
       if (state.requestTruncated) truncatedSources.push("request");
@@ -197,6 +206,7 @@ export async function handleEvent(event, { reviewer, policies = [], stateDir, co
       };
       budgetCapture.used = 0;
       snapshot.request = budgetCapture(snapshot.request, "request"); snapshot.response = budgetCapture(snapshot.response, "response");
+      if (snapshot.currentTool) snapshot.currentTool = { ...snapshot.currentTool, input: budgetCapture(snapshot.currentTool.input, `receipt:${snapshot.currentTool.id ?? "current"}:input`) };
       snapshot.receipts = snapshot.receipts.map((receipt, i) => {
         const id = receipt.id ?? i;
         if (receipt.inputTruncated) truncatedSources.push(`receipt:${id}:input`);
@@ -220,7 +230,9 @@ export async function handleEvent(event, { reviewer, policies = [], stateDir, co
     });
   } catch { return { action: "none", notice: "Agent Rules state storage is unavailable; review is observe-only." }; }
 
-  if (!reviewer || !Array.isArray(policies) || !policies.length || !["response_end", "tool_result"].includes(event.kind)) return neutral;
+  if (!reviewer || !Array.isArray(policies) || !policies.length || !REVIEWED.includes(event.kind)) return neutral;
+  // Prompt and pre-tool checks add latency, so they run only when a policy asks for them.
+  if (["user_prompt", "tool_start"].includes(event.kind) && !policies.some((p) => p.events?.includes(event.kind))) return neutral;
   if (captured.interrupted) return neutral;
   if (captured.recoveryRequired) return { action: "none", notice: "Agent Rules session state is missing; review is observe-only to preserve the correction limit." };
   let result;
@@ -272,7 +284,7 @@ export async function handleEvent(event, { reviewer, policies = [], stateDir, co
         state.findings[key] = { ...finding, attempts: old?.attempts ?? 0, lastSeen: state.sequence,
           unchanged: old?.evidence === finding.evidence };
         if (activeFinding(finding) && (!old || hash(old.evidence ?? null) !== hash(finding.evidence ?? null) || old.mode !== finding.mode)) newOnes.push(finding);
-        else if (activeFinding(finding) && finding.mode === "repair") unchangedActive = true;
+        else if (activeFinding(finding) && ["repair", "block"].includes(finding.mode)) unchangedActive = true;
       }
       // Observe findings reach the user as a notice; the agent never sees them.
       const observed = [...new Set(newOnes.filter((f) => f.mode === "observe").map((f) => f.ruleId ?? "policy"))];
@@ -280,18 +292,26 @@ export async function handleEvent(event, { reviewer, policies = [], stateDir, co
       const findingEntries = Object.entries(state.findings).sort((a, b) => (a[1].lastSeen ?? 0) - (b[1].lastSeen ?? 0)).slice(-MAX_ITEMS);
       state.findings = Object.fromEntries(findingEntries);
       const cap = Math.max(0, Number(config.maxCorrectionsPerEpisode ?? 2));
-      const actionable = [...new Map(newOnes.filter((f) => f.mode === "repair" && f.correction && f.correction !== "undefined")
+      // A block stops the prompt or the tool call rather than asking for a rewrite, so it cannot loop: it
+      // applies to every match, repeats included, and does not use up the correction limit.
+      // Tool calls are blocked in repair and block mode; prompts only in block mode.
+      const rejectPrompt = event.kind === "user_prompt" && findings.some((f) => activeFinding(f) && f.mode === "block");
+      const blocking = event.kind === "tool_start" || rejectPrompt;
+      const actionable = [...new Map((blocking ? findings.filter(activeFinding) : newOnes).filter((f) => ["repair", "block"].includes(f.mode) && f.correction && f.correction !== "undefined")
+        .filter((f) => !rejectPrompt || f.mode === "block")
         .map((f) => [findingKey(f), f])).values()]
         .sort((a, b) => (b.priority ?? 0) - (a.priority ?? 0) || String(a.ruleId).localeCompare(String(b.ruleId))).slice(0, 3);
-      if (actionable.length && state.correctionsDelivered < cap) {
-        state.correctionsDelivered++; const attempt = state.correctionsDelivered;
-        state.pendingContinuation = event.platform === "codex" || event.platform === "claude";
+      if (actionable.length && (blocking || state.correctionsDelivered < cap)) {
+        const label = blocking ? "blocked" : `attempt ${++state.correctionsDelivered}/${cap}`;
+        if (event.kind === "response_end") {
+          state.pendingContinuation = event.platform === "codex" || event.platform === "claude";
+        }
         for (const f of actionable) state.findings[findingKey(f)].attempts++;
-        const feedback = actionable.map((f) => `[Agent Rules: ${f.ruleId ?? "policy"}; attempt ${attempt}/${cap}]\nEvidence: ${shownEvidence(f.evidence) || "(none provided)"}\nCorrection: ${f.correction}`).join("\n\n");
-        state.pendingContinuationText = feedback;
-        const effect = { action: event.kind === "response_end" ? "continue_turn" : "add_context",
-          feedback,
-          notice: withObserved(`Agent Rules: ${actionable.map((f) => f.ruleId ?? "policy").join(", ")} (${attempt}/${cap}).`) };
+        const feedback = actionable.map((f) => correctionText(f, label)).join("\n\n");
+        if (event.kind === "response_end") state.pendingContinuationText = feedback;
+        const effect = { action: event.kind === "response_end" ? "continue_turn" : rejectPrompt ? "block_prompt" : blocking ? "deny_tool" : "add_context",
+          event: event.kind, feedback: rejectPrompt ? `Agent Rules blocked this request. ${actionable.map((f) => `${f.ruleId}: ${f.description}`).join(" ")}` : feedback,
+          notice: withObserved(`Agent Rules: ${actionable.map((f) => f.ruleId ?? "policy").join(", ")} (${blocking ? "blocked" : label.replace("attempt ", "")}).`) };
         const done = complete(effect, feedback); await save(file, state); return done;
       }
       if (actionable.length && state.correctionsDelivered >= cap) {
@@ -299,7 +319,7 @@ export async function handleEvent(event, { reviewer, policies = [], stateDir, co
         await save(file, state); return done;
       }
       let effect = neutral;
-      if (resolved) effect = { action: "none", notice: "A previously reported issue is no longer present in the latest review." };
+      if (resolved) effect = neutral;
       else if (unchangedActive && state.correctionsDelivered >= cap) effect = { action: "none", notice: "Behavior review reached the correction limit for this request." };
       else if (unchangedActive) effect = { action: "none", notice: "No progress was observed on the previously reported issue." };
       else if (recovered) effect = { action: "none", notice: "Agent Rules review coverage has recovered." };

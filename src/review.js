@@ -19,6 +19,11 @@ const redactAny = (value) => {
 };
 
 function spans(snapshot, target) {
+  if (target === "request") return [{ id: "request", text: String(snapshot.request ?? ""), context: "" }].filter((x) => x.text.trim());
+  if (target === "tool_call") {
+    const tool = snapshot.currentTool;
+    return tool ? [{ id: tool.id ?? "tool-call", text: [tool.tool ?? tool.name, tool.input].filter(Boolean).join("\n"), context: "" }] : [];
+  }
   if (target === "response") return [{ id: "response", text: String(snapshot.response ?? ""), context: "" }].filter((x) => x.text.trim());
   if (target === "response_span") {
     const lines = String(snapshot.response ?? "").split(/\n\s*\n/).map((text) => text.trim()).filter(Boolean);
@@ -50,6 +55,8 @@ function coverageAffects(snapshot, policy) {
   if (!sources.length) return snapshot.coverage?.complete === false;
   const required = new Set(policy.requires ?? []);
   if (policy.target.startsWith("response")) required.add("response");
+  if (policy.target === "request") required.add("request");
+  if (policy.target === "tool_call") required.add("receipts");
   if (policy.target.startsWith("thinking")) required.add("thinking");
   if (policy.target === "code_change") required.add("changes");
   return sources.some((source) => source === "unknown" || source === "request" && required.has("request") || source === "response" && required.has("response") || source.startsWith("receipt:") && (required.has("receipts") || required.has("tool_calls")) || source.startsWith("change:") && ["changes", "code", "diff"].some((x) => required.has(x)) || source.startsWith("thinking:") && required.has("thinking"));
@@ -119,7 +126,7 @@ function uncertainDiagnostic(answer, policy) {
 
 function sourceEvidence(snapshot, policy, candidate) {
   const out = [{ id: candidate.id, text: redact(candidate.text) }];
-  if (policy.requires?.includes("request") && snapshot.request) out.push({ id: "request", text: redact(snapshot.request) });
+  if (policy.requires?.includes("request") && snapshot.request && candidate.id !== "request") out.push({ id: "request", text: redact(snapshot.request) });
   if (policy.requires?.some((x) => ["receipts", "tool_calls"].includes(x))) {
     for (const receipt of snapshot.receipts ?? []) out.push({ id: receipt.id, text: redact([receipt.tool ?? receipt.name, receipt.input, receipt.result, receipt.status].filter(Boolean).join("\n")) });
   }

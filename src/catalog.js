@@ -5,7 +5,7 @@ import { parseDocument } from 'yaml';
 
 const EVIDENCE = new Set(['request', 'response', 'receipts', 'changes', 'thinking', 'constraints']);
 const EVENTS = new Set(['session_start', 'user_prompt', 'tool_start', 'tool_result', 'thinking_observed', 'response_end', 'interrupt', 'session_end']);
-const TARGETS = new Set(['response', 'response_span', 'code_change', 'thinking', 'thinking_span']);
+const TARGETS = new Set(['request', 'tool_call', 'response', 'response_span', 'code_change', 'thinking', 'thinking_span']);
 function rejectUnknown(value, allowed, file, field) {
   for (const key of Object.keys(value)) if (!allowed.includes(key)) fail(file, `${field}.${key}`, 'is not a supported field');
 }
@@ -95,8 +95,8 @@ export function parsePolicy(source, { file = '<policy>' } = {}) {
     correction = lines.slice(heading + 1, next).join('\n').trim();
   }
   const mode = raw.intervention ?? 'observe';
-  if (!['observe', 'repair'].includes(mode)) fail(file, 'intervention', 'must be observe or repair');
-  if (mode === 'repair' && !correction) fail(file, 'Correction', 'section is required for repair policies');
+  if (!['observe', 'repair', 'block'].includes(mode)) fail(file, 'intervention', 'must be observe, repair, or block');
+  if (['repair', 'block'].includes(mode) && !correction) fail(file, 'Correction', 'section is required for repair and block policies');
   const hash = createHash('sha256').update(JSON.stringify({ frontmatter: raw, correction })).digest('hex');
   return Object.freeze({ id: raw.id, description: raw.description, events: Object.freeze([...raw.events]), target: raw.target,
     requires: Object.freeze([...raw.requires]), priority: raw.priority, detector: Object.freeze(detector), correction, hash, mode });
@@ -131,9 +131,9 @@ export async function loadPolicies({ directories = [], modes = {} } = {}) {
   for (const [id, parsed] of chosen) {
     if (!parsed) continue;
     const mode = modes[id] ?? parsed.mode;
-    if (!['off', 'observe', 'repair'].includes(mode)) { diagnostics.push({ id, message: `invalid mode ${JSON.stringify(mode)}; policy disabled` }); continue; }
+    if (!['off', 'observe', 'repair', 'block'].includes(mode)) { diagnostics.push({ id, message: `invalid mode ${JSON.stringify(mode)}; policy disabled` }); continue; }
     if (mode === 'off') continue;
-    if (mode === 'repair' && !parsed.correction) { diagnostics.push({ id, message: 'repair mode requires a Correction section; policy disabled' }); continue; }
+    if (['repair', 'block'].includes(mode) && !parsed.correction) { diagnostics.push({ id, message: `${mode} mode requires a Correction section; policy disabled` }); continue; }
     policies.push(Object.freeze({ ...parsed, mode }));
   }
   return { policies: Object.freeze(policies), diagnostics };

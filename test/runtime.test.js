@@ -117,7 +117,42 @@ test("observe findings never trigger repairs; arrays retain exact evidence and c
   assert.equal((await handleEvent(event("response_end"), { ...ctx, reviewer })).action, "none");
   assert.equal((await handleEvent(event("response_end"), { ...ctx, reviewer })).notice, undefined);
   current = { ruleId: "rule", status: "clear", evidence: "checked all relevant content" };
-  assert.match((await handleEvent(event("response_end"), { ...ctx, reviewer })).notice, /no longer present/);
+  assert.deepEqual(await handleEvent(event("response_end"), { ...ctx, reviewer }), { action: "none" });
+});
+
+test("user_prompt policies add context before work starts; tool_start policies deny the pending call", async () => {
+  const ctx = await make(); let seen;
+  const prompt = { ...ctx, policies: [{ id: "req", events: ["user_prompt"] }] };
+  const reviewer = { review: async (snapshot) => { seen = snapshot; return { findings: [{ ...finding("r", "blocked topic"), ruleId: "req" }] }; } };
+  const added = await handleEvent(event("user_prompt", { source: "host_user", userText: "find cat pictures" }), { ...prompt, reviewer });
+  assert.equal(seen.request, "find cat pictures");
+  assert.equal(added.action, "add_context"); assert.equal(added.event, "user_prompt"); assert.match(added.feedback, /attempt 1\/2/);
+
+  const tools = { ...ctx, policies: [{ id: "tool", events: ["tool_start"] }] };
+  const toolReviewer = { review: async (snapshot) => { seen = snapshot; return { findings: [{ ...finding("t", "search"), ruleId: "tool" }] }; } };
+  const denied = await handleEvent(event("tool_start", { tool: { id: "call-1", name: "WebSearch", input: { query: "cat pictures" } } }), { ...tools, reviewer: toolReviewer });
+  assert.equal(seen.currentTool.id, "call-1"); assert.match(seen.currentTool.input, /cat pictures/);
+  assert.equal(denied.action, "deny_tool"); assert.equal(denied.event, "tool_start");
+});
+
+test("tool blocks repeat for identical calls, ignore the correction limit, and say where they came from", async () => {
+  const ctx = { ...(await make()), policies: [{ id: "tool", events: ["tool_start"] }], config: { maxCorrectionsPerEpisode: 1 } };
+  const reviewer = { review: async () => ({ findings: [{ ...finding("t", "same call"), ruleId: "tool" }] }) };
+  await handleEvent(event("user_prompt", { source: "host_user", userText: "task" }), ctx);
+  for (let i = 0; i < 3; i++) {
+    const denied = await handleEvent(event("tool_start", { tool: { id: `call-${i}`, name: "Bash", input: { command: "same" } } }), { ...ctx, reviewer });
+    assert.equal(denied.action, "deny_tool", `call ${i}`);
+    assert.match(denied.feedback, /\[Agent Rules: tool; blocked\]\nThis message comes from Agent Rules, a plugin the user installed/);
+    assert.match(denied.feedback, /The user's rule: issue/);
+  }
+});
+
+test("prompt and pre-tool reviews do not run unless a policy asks for that event", async () => {
+  const ctx = await make(); let calls = 0;
+  const reviewer = { review: async () => { calls++; return { findings: [] }; } };
+  await handleEvent(event("user_prompt", { source: "host_user", userText: "task" }), { ...ctx, reviewer });
+  await handleEvent(event("tool_start", { tool: { id: "a", name: "Bash", input: {} } }), { ...ctx, reviewer });
+  assert.equal(calls, 0);
 });
 
 test("interrupt suppresses Stop reviews until a genuine prompt starts a new episode", async () => {
