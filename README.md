@@ -28,10 +28,26 @@ to the agent. It never evaluates the file as shell code. Hooks normally use the
 agent process environment and never automatically load a target project's `.env`.
 This checkout's `.env` is ignored by Git.
 
-For normal Claude installation, add this checkout as a marketplace and install
-`agent-rules@agent-rules`. Codex packaging is in `plugin.json` and
-`.codex-plugin/plugin.json`; install through a configured marketplace and review
-its hooks with `/hooks`. Installation does not bypass host trust review.
+Both hosts install `agent-rules@agent-rules` from this checkout's `plugin/`
+folder. Claude reads `.claude-plugin/marketplace.json`; Codex reads
+`.agents/plugins/marketplace.json`:
+
+```sh
+npm run build
+claude plugin marketplace add "$PWD" && claude plugin install agent-rules@agent-rules
+codex plugin marketplace add "$PWD" && codex plugin add agent-rules@agent-rules
+```
+
+After each build, run `claude plugin marketplace update agent-rules` and
+`claude plugin update agent-rules@agent-rules`, and rerun
+`codex plugin add agent-rules@agent-rules`. Codex skips plugin hooks until
+they are trusted in `/hooks`; installation does not bypass host trust review.
+
+omp reads the regex rules through a symlink to the built folder:
+
+```sh
+ln -sfn "$PWD/plugin/rules" ~/.omp/agent/rules
+```
 
 For direct Codex hook setup, use `hooks/codex.json`, replacing `${PLUGIN_ROOT}`
 with the absolute checkout path when configuring hooks outside a plugin.
