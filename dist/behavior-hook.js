@@ -165,7 +165,7 @@ ${f.body}`).join(`
 
 `).slice(0,8e3);if(n.kind==="tool_start"&&t==="claude"&&l.action!=="deny_tool"){process.stdout.write(JSON.stringify({hookSpecificOutput:{hookEventName:"PreToolUse",permissionDecision:"ask",permissionDecisionReason:g}}));return}n.kind==="tool_result"&&(l={action:"add_context",notice:"Agent Rules: deterministic code policy matched.",feedback:[l.feedback,g].filter(Boolean).join(`
 
-`)})}}[...r,...o.diagnostics].length&&n.kind==="session_start"&&(l.notice="Agent Rules: configuration diagnostics are available via status.");let p=Na(t,l);Object.keys(p).length&&process.stdout.write(JSON.stringify(p))}_h().catch(()=>{process.stdout.write(JSON.stringify({systemMessage:"Agent Rules: review unavailable (invalid input or runtime failure). Run status for configuration diagnostics."}))});
+`)})}}[...r,...o.diagnostics].length&&n.kind==="session_start"&&(l.notice="Agent Rules: configuration diagnostics are available via status."),n.kind==="session_start"&&!process.env.TYPESAFE_API_KEY&&o.policies.some(c=>c.detector?.type==="jev")&&(l.notice=[l.notice,"Agent Rules: TYPESAFE_API_KEY is not set, so Jev rules cannot run. Export it in your shell profile (for example ~/.zshrc) and restart. See the README."].filter(Boolean).join(" "));let p=Na(t,l);Object.keys(p).length&&process.stdout.write(JSON.stringify(p))}_h().catch(()=>{process.stdout.write(JSON.stringify({systemMessage:"Agent Rules: review unavailable (invalid input or runtime failure). Run status for configuration diagnostics."}))});
 //! The YAML subset an omp rule file actually uses.
 //! Load rule files and normalise them exactly the way omp does.
 //! Given one hook payload and the loaded rules, decide which rules fire.

@@ -7,8 +7,8 @@
     {
       "name": "agent-rules",
       "source": {
-        "source": "local",
-        "path": "./plugin"
+        "source": "npm",
+        "package": "@jvsteiner/agent-rules"
       },
       "policy": {
         "installation": "AVAILABLE",

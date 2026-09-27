@@ -9,6 +9,8 @@ import { loadConfig } from '../src/config.js';
 import { createReviewer } from '../src/review.js';
 import { createJevClient } from '../src/jev.js';
 import { evaluateCases, compareReports } from '../src/workbench.js';
+import { installOmp } from '../src/install-omp.js';
+import { existsSync } from 'node:fs';
 
 const root=resolve(dirname(fileURLToPath(import.meta.url)),'..');
 const args=process.argv.slice(2);
@@ -26,6 +28,12 @@ async function policiesAt(path){
 async function main(){
  const envFile=option('--env-file');
  if(envFile){const env=parseEnv(await readFile(resolve(envFile),'utf8'));if(env.TYPESAFE_API_KEY)process.env.TYPESAFE_API_KEY=env.TYPESAFE_API_KEY;}
+ // install-omp copies this package into omp. From a checkout, the built plugin/ folder is the package.
+ if(command==='install-omp'){
+  const rules=option('--rules');const pluginDir=existsSync(join(root,'plugin','package.json'))?join(root,'plugin'):root;
+  for(const message of await installOmp({pluginDir,rulesDir:rules?resolve(rules):undefined}))process.stdout.write(message+'\n');
+  process.stdout.write('Restart omp to load the extension.\n');return;
+ }
  const configPath=option('--config');
  const {config,diagnostics}=await loadConfig({configPath});
  if(command==='validate'){
@@ -69,6 +77,6 @@ async function main(){
   const result=await loadPolicies({directories:[join(root,'policies'),...config.policyDirectories],modes:config.rules});
   output({version:(await readJSON(join(root,'package.json'))).version,credentials:{typesafe:!!process.env.TYPESAFE_API_KEY},model:config.model,stateDir:config.stateDir,journalStorage:'per-session JSON snapshots with bounded review history',reviewDeadlineMs:config.reviewDeadlineMs,maxCorrectionsPerEpisode:config.maxCorrectionsPerEpisode,maxReviewRequests:config.maxReviewRequests,policies:result.policies.map(p=>({id:p.id,mode:p.mode,hash:p.hash})),diagnostics:[...diagnostics,...result.diagnostics],capabilities:{claudeStop:'verified',codexStop:'verified',claudeHeadlessNotices:'verified',codexHeadlessNotices:'not emitted by exec --json; inspect journal',thinking:'conditional; ordinary Stop payloads do not expose thinking',hookInstallation:'not inferred; verify host hook/trust configuration'}});return;
  }
- throw new Error('Commands: validate, evaluate, compare, inspect, status, set-mode. Use --env-file explicitly for local development credentials.');
+ throw new Error('Commands: validate, evaluate, compare, inspect, status, set-mode, install-omp. Use --env-file explicitly for local development credentials.');
 }
 main().catch(error=>{process.stderr.write(`agent-rules: ${error.message}\n`);process.exitCode=1;});

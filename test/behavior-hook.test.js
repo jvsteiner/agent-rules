@@ -39,10 +39,16 @@ for(const platform of ['claude','codex'])test(`${platform} real hook subprocess:
  assert.equal(rejected.decision,'block');assert.equal(rejected.reason,'Agent Rules blocked this request. prompt-block: Probe prompt-block.');
  assert.deepEqual(call(cwd,platform,{hook_event_name:'UserPromptSubmit',prompt:'Something else.'}),{});
 });
+test('session start warns once when TYPESAFE_API_KEY is missing and Jev policies are active',()=>{
+ const cwd=setup();const env={...process.env,AGENT_RULES_STATE_DIR:join(cwd,'state'),AGENT_RULES_LEGACY:'0'};
+ const start=(key)=>{const e={...env};if(key)e.TYPESAFE_API_KEY=key;else delete e.TYPESAFE_API_KEY;const r=spawnSync(process.execPath,[resolve('bin/behavior-hook.js'),'claude'],{input:JSON.stringify({cwd,session_id:'key-session',hook_event_name:'SessionStart'}),encoding:'utf8',env:e});return r.stdout?JSON.parse(r.stdout):{};};
+ assert.match(start().systemMessage??'',/TYPESAFE_API_KEY is not set/);
+ assert.doesNotMatch(start('test-key').systemMessage??'',/TYPESAFE_API_KEY/);
+});
 test('built plugin folder works when copied to a path with spaces without node_modules',()=>{
  const cwd=setup();const installed=join(cwd,'installed plugin');
  cpSync(resolve('plugin'),installed,{recursive:true});
- for(const path of ['hooks/claude.json','hooks/codex.json','.claude-plugin/plugin.json','.codex-plugin/plugin.json','skills/author-rule/SKILL.md','omp/agent-rules.js'])assert.ok(existsSync(join(installed,path)),path);
+ for(const path of ['hooks/claude.json','hooks/codex.json','.claude-plugin/plugin.json','.codex-plugin/plugin.json','skills/author-rule/SKILL.md','omp/agent-rules.js','.claude-plugin/marketplace.json','.agents/plugins/marketplace.json'])assert.ok(existsSync(join(installed,path)),path);
  // A root plugin.json takes precedence in Codex and hides .codex-plugin/plugin.json's hooks.
  for(const path of ['node_modules','src','test','docs','plugin.json'])assert.ok(!existsSync(join(installed,path)),path);
  for(const [manifest,hooks] of [['.claude-plugin/plugin.json','./hooks/claude.json'],['.codex-plugin/plugin.json','./hooks/codex.json']])assert.equal(JSON.parse(readFileSync(join(installed,manifest),'utf8')).hooks,hooks,manifest);

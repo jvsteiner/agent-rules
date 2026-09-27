@@ -14,7 +14,7 @@ Read [references/policy-format.md](references/policy-format.md) when creating or
 
 Set its mode in the matching `config.json` (`~/.config/agent-rules/config.json` or `<project>/.agent-rules/config.json`) with `set-mode <id> <mode> --scope user` or `--scope project`; all three hosts read the same files.
 
-Policies in the Agent Rules checkout's own `policies/` folder ship inside the installed plugin. A new or changed file there applies only after `npm run install-hosts` in the checkout and a restart of open sessions. Tell the user this when you write there.
+Policies in the Agent Rules checkout's own `policies/` folder ship inside the installed plugin. A new or changed file there applies only after `make install-local` in the checkout (or a release) and a restart of open sessions. Tell the user this when you write there.
 
 Regex code rules in the checkout's `rules/` folder are also live in all three hosts: omp reads them through `~/.omp/agent/rules`, and the Claude and Codex hooks read the same folder. Keep `Why` explanatory; put all classifier-relevant distinctions in the detector instructions and criteria. Make the Correction section actionable and faithful to the user's requested behavior.
 

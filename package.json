@@ -1,11 +1,16 @@
 {
   "name": "agent-rules",
-  "version": "0.2.15",
+  "version": "0.2.16",
   "description": "Visible behavioral corrections for Claude Code, Codex, and omp, powered by Jev",
   "license": "MIT",
   "author": "Jamie Steiner",
   "type": "module",
   "private": true,
+  "pluginPackage": "@jvsteiner/agent-rules",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/jvsteiner/agent-rules.git"
+  },
   "scripts": {
     "test": "node --test test/*.test.js",
     "build": "node tools/build.mjs",

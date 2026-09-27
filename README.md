@@ -7,63 +7,166 @@ Automatic semantic feedback is limited to two deliveries per user episode.
 Findings, evidence, and rechecks are inspectable. The original ten regex code
 rules remain supported without a TypeSafe key.
 
-## Quick start
+## Install
 
-Node 20.12 or newer is required. Committed `dist/` bundles include the runtime
-and YAML dependency; installed hooks never download packages. `npm run build`
-(also run by `npm ci` and `npm version`) bundles `dist/` and assembles the
-ignored `plugin/` folder, which holds only the manifests, hooks, bundles,
-policies, rules, and skills. The marketplace installs from `plugin/`, so build
-before installing or updating.
+Agent Rules is published to npm as `@jvsteiner/agent-rules`. Installing needs
+Node 20.12 or newer and no clone of this repository. The package contains
+prebuilt bundles; installed hooks never download other packages.
 
-```sh
-npm ci
-npm test
-node dist/agent-rules.js status --env-file .env
-node tools/with-key.mjs .env claude --plugin-dir .
-```
+### 1. Set your TypeSafe key
 
-The explicit launcher parses the specified `.env` and passes `TYPESAFE_API_KEY`
-to the agent. It never evaluates the file as shell code. Hooks normally use the
-agent process environment and never automatically load a target project's `.env`.
-This checkout's `.env` is ignored by Git.
+Jev rules call TypeSafe's Jev model, which needs an API key from
+[TypeSafe](https://docs.typesafe.ai/). The hooks read the key only from the
+`TYPESAFE_API_KEY` environment variable of the agent process. They never read a
+`.env` file, so a project's secrets cannot leak into a review.
 
-Claude Code, Codex, and omp all run the same built hook from this checkout's
-`plugin/` folder. One command builds it and installs or updates it in every host
-found on the machine:
+Export the key in your shell profile, for example `~/.zshrc`, then open a new
+terminal so Claude Code, Codex, and omp start with it:
 
 ```sh
-npm run install-hosts
+export TYPESAFE_API_KEY=your-key
 ```
 
-- Claude Code and Codex install `agent-rules@agent-rules` from their
-  marketplace files, `.claude-plugin/marketplace.json` and
-  `.agents/plugins/marketplace.json`.
-- omp gets a copy in `~/.omp/agent/agent-rules/`, the extension
-  `~/.omp/agent/extensions/agent-rules.js` that runs the hook on omp's
-  session, prompt, tool, and stop events, and links for the `author-rule` and
-  `diagnose-rule` skills. omp's own TTSR feature enforces the regex rules, so the
-  extension turns the hook's regex layer off.
+For Claude Code only, the key can instead go in `~/.claude/settings.json` under
+`"env"`. Without a key, each session starts with the notice
+`Agent Rules: TYPESAFE_API_KEY is not set`, Jev rules do nothing, and regex
+rules still run.
 
-Restart open sessions after an install. Codex skips plugin hooks until they are
-trusted in `/hooks`; installation does not bypass host trust review.
+### 2. Install in each agent
 
-Rules apply in all three hosts as soon as they are saved, with no build:
+Claude Code:
 
-- Policies in `~/.config/agent-rules/rules/` (every project) and
-  `<project>/.agent-rules/rules/` (one project), with modes in the matching
-  `config.json`.
-- Regex rules in this checkout's `rules/` folder, which omp reads through the
-  `~/.omp/agent/rules` link. The Claude and Codex hooks read the same link.
+```sh
+claude plugin marketplace add jvsteiner/agent-rules
+claude plugin install agent-rules@agent-rules
+```
 
-Policies in this checkout's `policies/` folder ship inside the plugin and apply
-after `npm run install-hosts`.
+Codex:
 
-For direct Codex hook setup, use `hooks/codex.json`, replacing `${PLUGIN_ROOT}`
-with the absolute checkout path when configuring hooks outside a plugin.
-The platform manifests select separate hook files. Default `hooks/hooks.json`
-is intentionally empty to avoid duplicate registration. The original
-`bin/agent-rules-hook.js` remains usable for legacy omp-compatible setups.
+```sh
+codex plugin marketplace add jvsteiner/agent-rules
+codex plugin add agent-rules@agent-rules
+```
+
+Codex runs a plugin's hooks only after you trust them. Open Codex, run `/hooks`,
+and trust the seven Agent Rules hooks.
+
+omp:
+
+```sh
+npx @jvsteiner/agent-rules install-omp
+```
+
+This copies the package to `~/.omp/agent/agent-rules/`, writes the extension
+`~/.omp/agent/extensions/agent-rules.js`, and links the `author-rule` and
+`diagnose-rule` skills and the regex rules into `~/.omp/agent/`. It leaves any
+real folder already at those paths unchanged. omp enforces the regex rules itself
+through its TTSR feature, so the extension runs only the Jev policies.
+
+Restart open sessions after installing.
+
+### Update
+
+```sh
+claude plugin marketplace update agent-rules && claude plugin update agent-rules@agent-rules
+codex plugin add agent-rules@agent-rules
+npx @jvsteiner/agent-rules@latest install-omp
+```
+
+Restart open sessions afterwards. If an update changes Codex's hook file, trust
+the hooks again in `/hooks`.
+
+### Uninstall
+
+```sh
+claude plugin uninstall agent-rules@agent-rules
+codex plugin remove agent-rules@agent-rules
+rm -r ~/.omp/agent/agent-rules ~/.omp/agent/extensions/agent-rules.js \
+  ~/.omp/agent/skills/author-rule ~/.omp/agent/skills/diagnose-rule ~/.omp/agent/rules
+```
+
+Only remove `~/.omp/agent/rules` if it is the link the installer created.
+
+### Where rules live
+
+All three agents run the same hook and read the same rule folders on every event,
+so a saved rule applies on the next prompt, tool call, or reply, with no build or
+restart:
+
+- `~/.config/agent-rules/rules/`: your rules for every project, with modes in
+  `~/.config/agent-rules/config.json`.
+- `<project>/.agent-rules/rules/`: rules for one project, with modes in
+  `<project>/.agent-rules/config.json`.
+- The package's own `policies/` and `rules/` folders: starter rules that ship
+  with each release.
+
+The command-line tool runs as `npx @jvsteiner/agent-rules <command>`; in a
+checkout, `node dist/agent-rules.js <command>` is the same tool.
+
+## Development
+
+Work from a clone. The [Makefile](Makefile) runs every task with absolute paths
+built from `$(PWD)`, so run `make` from the repository root. It works with the
+GNU Make 3.81 that ships with macOS.
+
+```sh
+make deps            # npm ci, which also builds
+make test            # build and run the full test suite
+make check           # tests plus validation of the bundled policies
+make status          # effective policies, modes, and whether the key is set
+make install-local   # install this checkout into Claude Code, Codex, and omp
+```
+
+`make build` bundles `dist/` and assembles `plugin/`, which Git ignores.
+`plugin/` holds only what an install needs: manifests, hooks, bundles,
+policies, regex rules, skills, and the omp extension. It is both the npm package
+and a local marketplace: `make install-local` registers `plugin/` as the
+`agent-rules` marketplace in Claude Code and Codex, installs from it, and
+installs omp with its regex rules linked to this checkout's `rules/`, so rule
+edits apply at once. It replaces an `agent-rules` marketplace that points at the
+published package. After changing code, hooks, skills, or `policies/`, run
+`make install-local` again and restart open sessions.
+
+For development, the repository's ignored `.env` can hold `TYPESAFE_API_KEY`.
+Only explicit commands read it: CLI calls with `--env-file .env`, and the
+launcher `node tools/with-key.mjs .env claude --plugin-dir plugin`, which
+parses the file without evaluating it as shell code.
+
+The manifests select separate hook files: `hooks/claude.json` and
+`hooks/codex.json`. The default `hooks/hooks.json` is empty so no host
+registers the hooks twice. The package has no root `plugin.json`: Codex reads a
+root `plugin.json` before `.codex-plugin/plugin.json` and would find no hooks.
+
+## Release
+
+Releases publish `plugin/` to npm as `@jvsteiner/agent-rules`. Both marketplace
+files in this repository (`.claude-plugin/marketplace.json` and
+`.agents/plugins/marketplace.json`) install that npm package, so a release
+reaches users through their normal update commands.
+
+One-time setup: `npm login` with an account that can publish the
+`@jvsteiner` scope, and `gh auth login` for GitHub.
+
+```sh
+make release                 # patch release
+make release BUMP=minor      # or minor, or major
+```
+
+`make release` runs these steps in order, and each can also run on its own:
+
+1. `make release-check` refuses to continue unless the tree is clean, the
+   branch is `main` and in sync with `origin/main`, and npm and gh are logged in.
+2. `make release-bump` bumps the version in `package.json`, which also updates
+   the plugin manifests and marketplace entries through the build, then runs the
+   tests, validates the bundled policies, commits `release: vX.Y.Z`, and tags
+   `vX.Y.Z`.
+3. `make release-publish` publishes `plugin/` to npm, then pushes `main` and
+   the tag.
+4. `make release-github` creates the GitHub release for the tag, with generated
+   notes and the npm tarball attached.
+
+If a step fails, fix the cause and rerun that step. `make pack` writes the npm
+tarball to `.release/` without publishing, to inspect exactly what ships.
 
 ## Authoring and configuration
 
@@ -103,8 +206,9 @@ Each policy has one of four modes:
 - `block`: like `repair`, and a request policy also rejects the prompt, so the
   model never sees it. Use it when the model must not act on a request at all;
   a correction is advice that a model can ignore.
- Broader starter policies remain observe-only while their useful
-operating thresholds are evaluated. Probabilities do not establish intent.
+
+Broader starter policies remain observe-only while their useful operating
+thresholds are evaluated. Probabilities do not establish intent.
 
 A policy's `events` and `target` choose when it acts, in Claude Code, Codex, and
 omp alike:

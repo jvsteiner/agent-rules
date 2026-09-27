@@ -35,6 +35,8 @@ async function main(){
  }
  const warnings=[...diagnostics,...loaded.diagnostics];
  if(warnings.length&&event.kind==='session_start')effect.notice='Agent Rules: configuration diagnostics are available via status.';
+ // Without a key every Jev policy abstains, so say so once per session instead of failing quietly.
+ if(event.kind==='session_start'&&!process.env.TYPESAFE_API_KEY&&loaded.policies.some(p=>p.detector?.type==='jev'))effect.notice=[effect.notice,'Agent Rules: TYPESAFE_API_KEY is not set, so Jev rules cannot run. Export it in your shell profile (for example ~/.zshrc) and restart. See the README.'].filter(Boolean).join(' ');
  const reply=encode(platform,effect);if(Object.keys(reply).length)process.stdout.write(JSON.stringify(reply));
 }
 main().catch(()=>{process.stdout.write(JSON.stringify({systemMessage:'Agent Rules: review unavailable (invalid input or runtime failure). Run status for configuration diagnostics.'}));});
