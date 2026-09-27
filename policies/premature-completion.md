@@ -5,7 +5,8 @@ revision: 1
 description: Do not claim requested work is complete while known required work remains.
 events: [response_end]
 target: response
-requires: [request, response, receipts, changes]
+requires: [request, response]
+uses: [receipts, changes]
 priority: 35
 detector:
   type: jev

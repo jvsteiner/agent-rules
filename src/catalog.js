@@ -56,7 +56,7 @@ export function parsePolicy(source, { file = '<policy>' } = {}) {
   if (doc.errors.length) fail(file, 'YAML', doc.errors[0].message);
   const raw = doc.toJS();
   if (!raw || typeof raw !== 'object' || Array.isArray(raw)) fail(file, 'frontmatter', 'must be a mapping');
-  rejectUnknown(raw, ['schema', 'id', 'revision', 'description', 'events', 'target', 'requires', 'priority', 'detector', 'intervention'], file, 'frontmatter');
+  rejectUnknown(raw, ['schema', 'id', 'revision', 'description', 'events', 'target', 'requires', 'uses', 'priority', 'detector', 'intervention'], file, 'frontmatter');
   if (raw.schema !== 'agent-rules/v1') fail(file, 'schema', 'must be agent-rules/v1');
   if (typeof raw.id !== 'string' || !/^[a-zA-Z0-9][a-zA-Z0-9._-]*$/.test(raw.id)) fail(file, 'id', 'must be a nonempty stable rule identifier');
   if (typeof raw.description !== 'string' || !raw.description.trim()) fail(file, 'description', 'is required');
@@ -66,6 +66,8 @@ export function parsePolicy(source, { file = '<policy>' } = {}) {
     const bad = Array.isArray(raw.requires) ? raw.requires.find(x => typeof x !== 'string' || !EVIDENCE.has(x)) : undefined;
     fail(file, 'requires', `unsupported evidence name ${JSON.stringify(bad)} (supported: ${[...EVIDENCE].join(', ')})`);
   }
+  // `uses` names evidence that is sent when present but, unlike `requires`, never blocks the review.
+  if (raw.uses !== undefined && (!Array.isArray(raw.uses) || raw.uses.some(x => typeof x !== 'string' || !EVIDENCE.has(x)))) fail(file, 'uses', `must list supported evidence names (${[...EVIDENCE].join(', ')})`);
   if (!Number.isInteger(raw.priority) || raw.priority < 0 || raw.priority > 1000) fail(file, 'priority', 'must be an integer from 0 to 1000');
   const detector = raw.detector;
   if (!detector || typeof detector !== 'object') fail(file, 'detector', 'is required');
@@ -99,7 +101,7 @@ export function parsePolicy(source, { file = '<policy>' } = {}) {
   if (['repair', 'block'].includes(mode) && !correction) fail(file, 'Correction', 'section is required for repair and block policies');
   const hash = createHash('sha256').update(JSON.stringify({ frontmatter: raw, correction })).digest('hex');
   return Object.freeze({ id: raw.id, description: raw.description, events: Object.freeze([...raw.events]), target: raw.target,
-    requires: Object.freeze([...raw.requires]), priority: raw.priority, detector: Object.freeze(detector), correction, hash, mode });
+    requires: Object.freeze([...raw.requires]), uses: Object.freeze([...(raw.uses ?? [])]), priority: raw.priority, detector: Object.freeze(detector), correction, hash, mode });
 }
 
 export async function loadPolicies({ directories = [], modes = {} } = {}) {

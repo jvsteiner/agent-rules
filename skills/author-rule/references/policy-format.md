@@ -45,7 +45,7 @@ Explain the user value of the rule.
 Give a direct instruction for fixing this finding using the available evidence.
 ```
 
-Use only evidence groups available to the runtime: `request`, `response`, `receipts`, `changes`, `thinking`, and `constraints`. Keep `events`, `requires`, and detector criteria specific to the rule. Choose the check point from when the rule can act:
+Use only evidence groups available to the runtime: `request`, `response`, `receipts`, `changes`, `thinking`, and `constraints`. `requires` lists evidence the rule cannot be judged without; when any of it is missing, the review is skipped as unknown. `uses` lists evidence that helps when present but must not block the review, such as `receipts` or `changes` for a reply rule that also runs on turns without edits. Keep `events`, `requires`, and detector criteria specific to the rule. Choose the check point from when the rule can act:
 
 | `events` | `target` | Checks | A `repair` finding |
 |---|---|---|---|

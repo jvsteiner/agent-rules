@@ -38,7 +38,8 @@ function requiredPresent(snapshot, requires = []) {
   return requires.every((key) => {
     if (key === "request") return Boolean(snapshot.request);
     if (key === "response") return Boolean(snapshot.response);
-    if (key === "receipts" || key === "tool_calls") return (snapshot.receipts ?? []).length > 0 && !(snapshot.receipts ?? []).some((r) => r.status === "pending");
+    // The call under review at tool_start is pending by definition; any other pending call is incomplete evidence.
+    if (key === "receipts" || key === "tool_calls") return (snapshot.receipts ?? []).length > 0 && !(snapshot.receipts ?? []).some((r) => r.status === "pending" && r.id !== snapshot.currentTool?.id);
     if (key === "thinking") return (snapshot.thinking ?? []).some((t) => t.completeness === "complete_segment");
     if (["changes", "code", "diff"].includes(key)) return (snapshot.changes ?? []).length > 0;
     if (key === "constraints") return snapshot.constraints !== undefined && snapshot.constraints !== null;
@@ -126,17 +127,18 @@ function uncertainDiagnostic(answer, policy) {
 
 function sourceEvidence(snapshot, policy, candidate) {
   const out = [{ id: candidate.id, text: redact(candidate.text) }];
-  if (policy.requires?.includes("request") && snapshot.request && candidate.id !== "request") out.push({ id: "request", text: redact(snapshot.request) });
-  if (policy.requires?.some((x) => ["receipts", "tool_calls"].includes(x))) {
+  const wanted = new Set([...(policy.requires ?? []), ...(policy.uses ?? [])]);
+  if (wanted.has("request") && snapshot.request && candidate.id !== "request") out.push({ id: "request", text: redact(snapshot.request) });
+  if (["receipts", "tool_calls"].some((x) => wanted.has(x))) {
     for (const receipt of snapshot.receipts ?? []) out.push({ id: receipt.id, text: redact([receipt.tool ?? receipt.name, receipt.input, receipt.result, receipt.status].filter(Boolean).join("\n")) });
   }
-  if (policy.requires?.some((x) => ["changes", "code", "diff"].includes(x))) {
+  if (["changes", "code", "diff"].some((x) => wanted.has(x))) {
     for (const [i, change] of (snapshot.changes ?? []).entries()) out.push({ id: change.id ?? `change-${i}`, text: redact([change.path, change.text, change.context].filter(Boolean).join("\n")) });
   }
-  if (policy.requires?.includes("thinking")) {
+  if (wanted.has("thinking")) {
     for (const item of snapshot.thinking ?? []) if (item.completeness === "complete_segment") out.push({ id: item.id, text: redact(item.text) });
   }
-  if (policy.requires?.includes("constraints")) out.push({ id: "constraints", text: JSON.stringify(redactAny(snapshot.constraints)) });
+  if (wanted.has("constraints")) out.push({ id: "constraints", text: JSON.stringify(redactAny(snapshot.constraints)) });
   return out;
 }
 
@@ -190,7 +192,7 @@ export function createReviewer({ client = createJevClient(), model = "jev-1.13.0
         try {
           const timeout = new Promise((_, reject) => { timer = setTimeout(() => { deadlineExpired = true; controller.abort(); reject(new Error("review deadline exceeded")); }, deadlineMs); });
           const buildPayload = (selected) => {
-            const required = new Set(selected.flatMap(({ policy }) => policy.requires ?? []));
+            const required = new Set(selected.flatMap(({ policy }) => [...(policy.requires ?? []), ...(policy.uses ?? [])]));
             const state = {
               ...(required.has("request") ? { request: redact(snapshot.request) } : {}),
               ...(required.has("response") || selected.some(({ policy }) => policy.target.startsWith("response")) ? { response: redact(snapshot.response) } : {}),

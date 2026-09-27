@@ -151,3 +151,29 @@ test("oversized candidates are omitted individually while a small candidate is s
     assert.equal(result.findings.find((x) => x.ruleId === "huge").diagnostic.code, "input_budget_exceeded");
   }
 });
+
+test("uses sends optional evidence when present without blocking the review when absent", async () => {
+  let sent;
+  const answer = { answers: { q0: { type: "choice", choice: "supported", probabilities: { contradicted: 0.02, supported: 0.96, unknown: 0.02 } } } };
+  const reviewer = createReviewer({ client: { evaluate: async (arg) => { sent = arg; return answer; } } });
+  const optional = policy("optional", { target: "response", requires: ["response"], uses: ["receipts", "changes"] });
+  await reviewer.review({ ...snapshot(), changes: [] }, [optional]);
+  assert.ok(sent, "reviewed although changes were empty");
+  assert.equal(sent.state.receipts[0].id, "test-1");
+  assert.deepEqual(sent.state.changes, []);
+});
+
+test("a tool_call policy can require earlier calls while the call under review is pending", async () => {
+  let sent;
+  const answer = { answers: { q0: { type: "choice", choice: "supported", probabilities: { contradicted: 0.02, supported: 0.96, unknown: 0.02 } } } };
+  const reviewer = createReviewer({ client: { evaluate: async (arg) => { sent = arg; return answer; } } });
+  const current = { id: "now", tool: "Grep", input: "{\"pattern\":\"x\"}", status: "pending" };
+  const tools = policy("tools", { events: ["tool_start"], target: "tool_call", requires: ["receipts"] });
+  const earlier = { id: "before", tool: "mcp__semble__search", input: "{}", result: "hits", status: "completed" };
+  await reviewer.review({ eventKind: "tool_start", request: "find it", receipts: [earlier, current], currentTool: current, changes: [], thinking: [] }, [tools]);
+  assert.deepEqual(sent.state.receipts.map((r) => r.id), ["before", "now"]);
+  assert.match(sent.state.candidates[0].text, /^Grep\n/);
+  sent = undefined;
+  await reviewer.review({ eventKind: "tool_start", request: "find it", receipts: [{ ...earlier, status: "pending" }, current], currentTool: current, changes: [], thinking: [] }, [tools]);
+  assert.equal(sent, undefined, "another pending call is still incomplete evidence");
+});
