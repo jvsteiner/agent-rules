@@ -25,7 +25,7 @@ for(const platform of ['claude','codex'])test(`${platform} real hook subprocess:
 test('built plugin folder works when copied to a path with spaces without node_modules',()=>{
  const cwd=setup();const installed=join(cwd,'installed plugin');
  cpSync(resolve('plugin'),installed,{recursive:true});
- for(const path of ['hooks/claude.json','hooks/codex.json','.claude-plugin/plugin.json','.codex-plugin/plugin.json','skills/author-rule/SKILL.md'])assert.ok(existsSync(join(installed,path)),path);
+ for(const path of ['hooks/claude.json','hooks/codex.json','.claude-plugin/plugin.json','.codex-plugin/plugin.json','skills/author-rule/SKILL.md','omp/agent-rules.js'])assert.ok(existsSync(join(installed,path)),path);
  for(const path of ['node_modules','src','test','docs'])assert.ok(!existsSync(join(installed,path)),path);
  for(const [manifest,hooks] of [['.claude-plugin/plugin.json','./hooks/claude.json'],['.codex-plugin/plugin.json','./hooks/codex.json']])assert.equal(JSON.parse(readFileSync(join(installed,manifest),'utf8')).hooks,hooks,manifest);
  const r=spawnSync(process.execPath,[join(installed,'dist/agent-rules.js'),'validate',join(installed,'policies')],{encoding:'utf8'});

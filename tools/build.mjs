@@ -15,6 +15,6 @@ await build({entryPoints:{'behavior-hook':'bin/behavior-hook.js','agent-rules':'
 // Assemble the installable plugin: only what the hooks, CLI, and skills load at run time.
 await rm('plugin',{recursive:true,force:true});
 await mkdir('plugin');
-for(const path of ['.claude-plugin/plugin.json','.codex-plugin/plugin.json','plugin.json','hooks','dist','policies','rules','skills','README.md','LICENSE'])
+for(const path of ['.claude-plugin/plugin.json','.codex-plugin/plugin.json','plugin.json','hooks','dist','policies','rules','skills','omp','README.md','LICENSE'])
   await cp(path,`plugin/${path}`,{recursive:true});
 await writeFile('plugin/package.json',JSON.stringify({name:pkg.name,version:pkg.version,type:'module',license:pkg.license},null,2)+'\n');

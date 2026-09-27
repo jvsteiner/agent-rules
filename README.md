@@ -1,6 +1,6 @@
 # agent-rules
 
-Editable behavioral policies for Claude Code and Codex. Jev evaluates the work;
+Editable behavioral policies for Claude Code, Codex, and omp. Jev evaluates the work;
 the coding agent receives a specific correction and gets another attempt.
 
 Automatic semantic feedback is limited to two deliveries per user episode.
@@ -28,26 +28,36 @@ to the agent. It never evaluates the file as shell code. Hooks normally use the
 agent process environment and never automatically load a target project's `.env`.
 This checkout's `.env` is ignored by Git.
 
-Both hosts install `agent-rules@agent-rules` from this checkout's `plugin/`
-folder. Claude reads `.claude-plugin/marketplace.json`; Codex reads
-`.agents/plugins/marketplace.json`:
+Claude Code, Codex, and omp all run the same built hook from this checkout's
+`plugin/` folder. One command builds it and installs or updates it in every host
+found on the machine:
 
 ```sh
-npm run build
-claude plugin marketplace add "$PWD" && claude plugin install agent-rules@agent-rules
-codex plugin marketplace add "$PWD" && codex plugin add agent-rules@agent-rules
+npm run install-hosts
 ```
 
-After each build, run `claude plugin marketplace update agent-rules` and
-`claude plugin update agent-rules@agent-rules`, and rerun
-`codex plugin add agent-rules@agent-rules`. Codex skips plugin hooks until
-they are trusted in `/hooks`; installation does not bypass host trust review.
+- Claude Code and Codex install `agent-rules@agent-rules` from their
+  marketplace files, `.claude-plugin/marketplace.json` and
+  `.agents/plugins/marketplace.json`.
+- omp gets a copy in `~/.omp/agent/agent-rules/`, the extension
+  `~/.omp/agent/extensions/agent-rules.js` that runs the hook on omp's
+  session, prompt, tool, and stop events, and links for the `author-rule` and
+  `diagnose-rule` skills. omp's own TTSR feature enforces the regex rules, so the
+  extension turns the hook's regex layer off.
 
-omp reads the regex rules through a symlink to the built folder:
+Restart open sessions after an install. Codex skips plugin hooks until they are
+trusted in `/hooks`; installation does not bypass host trust review.
 
-```sh
-ln -sfn "$PWD/plugin/rules" ~/.omp/agent/rules
-```
+Rules apply in all three hosts as soon as they are saved, with no build:
+
+- Policies in `~/.config/agent-rules/rules/` (every project) and
+  `<project>/.agent-rules/rules/` (one project), with modes in the matching
+  `config.json`.
+- Regex rules in this checkout's `rules/` folder, which omp reads through the
+  `~/.omp/agent/rules` link. The Claude and Codex hooks read the same link.
+
+Policies in this checkout's `policies/` folder ship inside the plugin and apply
+after `npm run install-hosts`.
 
 For direct Codex hook setup, use `hooks/codex.json`, replacing `${PLUGIN_ROOT}`
 with the absolute checkout path when configuring hooks outside a plugin.

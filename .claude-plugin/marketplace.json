@@ -7,9 +7,9 @@
   "plugins": [
     {
       "name": "agent-rules",
-      "version": "0.2.4",
+      "version": "0.2.6",
       "source": "./plugin",
-      "description": "Visible behavioral corrections for Claude Code and Codex, powered by Jev",
+      "description": "Visible behavioral corrections for Claude Code, Codex, and omp, powered by Jev",
       "author": {
         "name": "Jamie Steiner"
       }
