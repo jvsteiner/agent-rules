@@ -51,6 +51,7 @@ function requiredPresent(snapshot, requires = []) {
     if (key === "thinking") return (snapshot.thinking ?? []).some((t) => t.completeness === "complete_segment");
     if (["changes", "code", "diff"].includes(key)) return (snapshot.changes ?? []).length > 0;
     if (key === "constraints") return snapshot.constraints !== undefined && snapshot.constraints !== null;
+    if (key === "conversation") return Boolean(snapshot.conversation?.earlier_requests?.length || snapshot.conversation?.previous_response);
     return snapshot[key] !== undefined && snapshot[key] !== null;
   });
 }
@@ -208,6 +209,7 @@ export function createReviewer({ client = createJevClient(), model = "jev-1.13.0
               ...(["changes", "code", "diff"].some((k) => required.has(k)) ? { changes: (snapshot.changes ?? []).map((c) => ({ path: redact(c.path), text: redact(c.text), context: redact(c.context) })) } : {}),
               ...(required.has("thinking") ? { thinking: (snapshot.thinking ?? []).filter((t) => t.completeness === "complete_segment").map((t) => ({ id: t.id, text: redact(t.text), kind: t.kind, completeness: t.completeness })) } : {}),
               ...(required.has("constraints") ? { constraints: redactAny(snapshot.constraints) } : {}),
+              ...(required.has("conversation") && snapshot.conversation ? { conversation: redactAny(snapshot.conversation) } : {}),
               ...(Object.keys(snapshot.coverage ?? {}).length ? { coverage: redactAny(snapshot.coverage) } : {}),
               candidates: selected.map(({ policy, candidate }) => ({ id: candidate.id, text: redact(candidate.text), context: redact(candidate.context), rule: policy.id })),
             };

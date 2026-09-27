@@ -1,6 +1,6 @@
 {
   "name": "agent-rules",
-  "version": "0.2.17",
+  "version": "0.2.18",
   "description": "Visible behavioral corrections for Claude Code, Codex, and omp, powered by Jev",
   "license": "MIT",
   "author": "Jamie Steiner",

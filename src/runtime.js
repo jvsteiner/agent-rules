@@ -97,6 +97,7 @@ The user's rule: ${f.description ?? "(no description)"}
 Evidence: ${shownEvidence(f.evidence) || "(none provided)"}
 Correction: ${f.correction}`;
 const UNSURE = new Set(["below_threshold", "unknown_choice", "between_thresholds", "inconclusive"]);
+const MAX_EARLIER_REQUESTS = 3, MAX_EARLIER_REQUEST = 1500, MAX_PREVIOUS_RESPONSE = 2000;
 const REVIEWED = ["user_prompt", "tool_start", "tool_result", "response_end"];
 const activeFinding = (f) => ["finding", "violation", "fail", "failed", "noncompliant"].includes(String(f.status).toLowerCase());
 const findingKey = (f) => hash([f.ruleId, f.id, f.evidence, activeFinding(f) ? "active" : String(f.status).toLowerCase()]);
@@ -125,6 +126,10 @@ export async function handleEvent(event, { reviewer, policies = [], stateDir, co
           appendHistory(state, { episodeId: state.episodeId, sequence: state.sequence }, Object.values(state.findings),
             { action: "unknown", legacy: true });
         }
+        // Keep a short conversation window so request and tool rules can read a reply such as
+        // "yes" or a chosen option against what came before it.
+        if (state.currentRequest) state.earlierRequests = [...(state.earlierRequests ?? []), state.currentRequest.slice(0, MAX_EARLIER_REQUEST)].slice(-MAX_EARLIER_REQUESTS);
+        if (state.response) state.previousResponse = state.response.slice(-MAX_PREVIOUS_RESPONSE);
         state.episodeId++; state.generation++; state.correctionsDelivered = 0;
         state.sessionId = event.sessionId;
         state.originatingUserEvent = event.eventId ?? `local-${state.sequence + 1}`;
@@ -191,7 +196,8 @@ export async function handleEvent(event, { reviewer, policies = [], stateDir, co
       if (event.kind === "interrupt") { state.interrupted = true; state.pendingContinuation = false; state.pendingContinuationText = ""; }
       if (event.kind === "session_end") { state.pendingContinuation = false; state.pendingContinuationText = ""; }
       const snapshot = { eventKind: event.kind, request: state.currentRequest, response: state.response,
-        receipts: state.receipts.slice(), changes: state.changes.slice(), thinking: state.thinking.slice(), coverage: {} };
+        receipts: state.receipts.slice(), changes: state.changes.slice(), thinking: state.thinking.slice(), coverage: {},
+        conversation: { earlier_requests: state.earlierRequests ?? [], previous_response: state.previousResponse ?? "" } };
       // The tool call about to run, for tool_call policies checked before execution.
       if (event.kind === "tool_start" && event.tool) snapshot.currentTool = state.receipts.findLast((r) => r.status === "pending" && (!event.tool.id || r.id === event.tool.id));
       const truncatedSources = [];

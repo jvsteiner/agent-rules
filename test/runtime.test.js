@@ -156,6 +156,17 @@ test("an unsure classifier is silent; missing evidence still notifies", async ()
   assert.match((await handleEvent(event("response_end", { response: "ok" }), { ...ctx, reviewer: reviewerWith([missing]) })).notice, /could not complete review/);
 });
 
+test("snapshots carry the earlier requests and the previous reply, so an answer can be read in context", async () => {
+  const ctx = await make(); let seen;
+  const reviewer = { review: async (snapshot) => { seen = snapshot; return { findings: [] }; } };
+  await handleEvent(event("user_prompt", { source: "host_user", userText: "Implement the read-mail sort mode." }), ctx);
+  await handleEvent(event("response_end", { response: "Should it rank only the loaded list, or the whole folder?" }), { ...ctx, reviewer });
+  await handleEvent(event("user_prompt", { source: "host_user", userText: "Current loaded list" }), ctx);
+  await handleEvent(event("tool_start", { tool: { id: "p", name: "apply_patch", input: { command: "patch" } } }), { ...ctx, policies: [{ id: "t", events: ["tool_start"] }], reviewer });
+  assert.equal(seen.request, "Current loaded list");
+  assert.deepEqual(seen.conversation, { earlier_requests: ["Implement the read-mail sort mode."], previous_response: "Should it rank only the loaded list, or the whole folder?" });
+});
+
 test("prompt and pre-tool reviews do not run unless a policy asks for that event", async () => {
   const ctx = await make(); let calls = 0;
   const reviewer = { review: async () => { calls++; return { findings: [] }; } };

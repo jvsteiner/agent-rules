@@ -3,7 +3,7 @@ import { readdir, readFile } from 'node:fs/promises';
 import path from 'node:path';
 import { parseDocument } from 'yaml';
 
-const EVIDENCE = new Set(['request', 'response', 'receipts', 'changes', 'thinking', 'constraints']);
+const EVIDENCE = new Set(['request', 'conversation', 'response', 'receipts', 'changes', 'thinking', 'constraints']);
 const EVENTS = new Set(['session_start', 'user_prompt', 'tool_start', 'tool_result', 'thinking_observed', 'response_end', 'interrupt', 'session_end']);
 const TARGETS = new Set(['request', 'tool_call', 'response', 'response_span', 'code_change', 'thinking', 'thinking_span']);
 function rejectUnknown(value, allowed, file, field) {
