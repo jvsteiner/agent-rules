@@ -96,6 +96,7 @@ This message comes from Agent Rules, a plugin the user installed to enforce rule
 The user's rule: ${f.description ?? "(no description)"}
 Evidence: ${shownEvidence(f.evidence) || "(none provided)"}
 Correction: ${f.correction}`;
+const UNSURE = new Set(["below_threshold", "unknown_choice", "between_thresholds", "inconclusive"]);
 const REVIEWED = ["user_prompt", "tool_start", "tool_result", "response_end"];
 const activeFinding = (f) => ["finding", "violation", "fail", "failed", "noncompliant"].includes(String(f.status).toLowerCase());
 const findingKey = (f) => hash([f.ruleId, f.id, f.evidence, activeFinding(f) ? "active" : String(f.status).toLowerCase()]);
@@ -252,7 +253,9 @@ export async function handleEvent(event, { reviewer, policies = [], stateDir, co
         return effect;
       };
       const reviewStatus = String(result?.status ?? "").toLowerCase();
-      const statuses = findings.map((f) => String(f.status).toLowerCase());
+      // A classifier that is merely unsure is a normal outcome: nothing fires, the journal keeps the
+      // judgment, and the user is not told the review failed. Missing evidence and outages still notify.
+      const statuses = findings.filter((f) => !(f.status === "unknown" && UNSURE.has(f.diagnostic?.code))).map((f) => String(f.status).toLowerCase());
       const health = ["unknown", "unavailable"].includes(reviewStatus) ? reviewStatus
         : statuses.length && statuses.every((s) => ["unknown", "unavailable"].includes(s))
           ? statuses.includes("unavailable") ? "unavailable" : "unknown" : "healthy";

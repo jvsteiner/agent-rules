@@ -147,6 +147,15 @@ test("tool blocks repeat for identical calls, ignore the correction limit, and s
   }
 });
 
+test("an unsure classifier is silent; missing evidence still notifies", async () => {
+  const ctx = await make();
+  const unsure = { ruleId: "rule", status: "unknown", diagnostic: { code: "below_threshold", message: "The winning classification did not meet the policy's confidence threshold." }, evidence: [] };
+  const missing = { ruleId: "rule", status: "unknown", diagnostic: { code: "missing_evidence", message: "Required evidence is missing or incomplete: changes." }, evidence: [] };
+  await handleEvent(event("user_prompt", { source: "host_user", userText: "edited it" }), ctx);
+  assert.deepEqual(await handleEvent(event("response_end", { response: "ok" }), { ...ctx, reviewer: reviewerWith([unsure]) }), { action: "none" });
+  assert.match((await handleEvent(event("response_end", { response: "ok" }), { ...ctx, reviewer: reviewerWith([missing]) })).notice, /could not complete review/);
+});
+
 test("prompt and pre-tool reviews do not run unless a policy asks for that event", async () => {
   const ctx = await make(); let calls = 0;
   const reviewer = { review: async () => { calls++; return { findings: [] }; } };
