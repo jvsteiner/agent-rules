@@ -4,6 +4,14 @@ import { chunkPayload } from "./review-chunks.js";
 
 const hash = (value) => createHash("sha256").update(value).digest("hex");
 const MAX_REVIEW_CHARS = 24000;
+// Only the most recent tool calls are sent, so a long turn cannot push every other
+// rule out of the shared request. Older calls are summarized by tool name.
+export const MAX_REVIEW_RECEIPTS = 10;
+const recentReceipts = (snapshot) => (snapshot.receipts ?? []).slice(-MAX_REVIEW_RECEIPTS);
+function omittedReceipts(snapshot) {
+  const older = (snapshot.receipts ?? []).slice(0, -MAX_REVIEW_RECEIPTS);
+  return older.length ? { count: older.length, tools: [...new Set(older.map((r) => r.tool ?? r.name).filter(Boolean))] } : undefined;
+}
 const redact = (value) => String(value ?? "")
   .replace(/\bgh[pousr]_[A-Za-z0-9]{20,}\b/g, "[REDACTED]")
   .replace(/\bsk-[A-Za-z0-9_-]{16,}\b/g, "[REDACTED]")
@@ -130,7 +138,7 @@ function sourceEvidence(snapshot, policy, candidate) {
   const wanted = new Set([...(policy.requires ?? []), ...(policy.uses ?? [])]);
   if (wanted.has("request") && snapshot.request && candidate.id !== "request") out.push({ id: "request", text: redact(snapshot.request) });
   if (["receipts", "tool_calls"].some((x) => wanted.has(x))) {
-    for (const receipt of snapshot.receipts ?? []) out.push({ id: receipt.id, text: redact([receipt.tool ?? receipt.name, receipt.input, receipt.result, receipt.status].filter(Boolean).join("\n")) });
+    for (const receipt of recentReceipts(snapshot)) out.push({ id: receipt.id, text: redact([receipt.tool ?? receipt.name, receipt.input, receipt.result, receipt.status].filter(Boolean).join("\n")) });
   }
   if (["changes", "code", "diff"].some((x) => wanted.has(x))) {
     for (const [i, change] of (snapshot.changes ?? []).entries()) out.push({ id: change.id ?? `change-${i}`, text: redact([change.path, change.text, change.context].filter(Boolean).join("\n")) });
@@ -196,7 +204,7 @@ export function createReviewer({ client = createJevClient(), model = "jev-1.13.0
             const state = {
               ...(required.has("request") ? { request: redact(snapshot.request) } : {}),
               ...(required.has("response") || selected.some(({ policy }) => policy.target.startsWith("response")) ? { response: redact(snapshot.response) } : {}),
-              ...(required.has("receipts") || required.has("tool_calls") ? { receipts: (snapshot.receipts ?? []).map((r) => ({ id: r.id, tool: r.tool ?? r.name, input: redactAny(r.input), result: redactAny(r.result), status: r.status })) } : {}),
+              ...(required.has("receipts") || required.has("tool_calls") ? { receipts: recentReceipts(snapshot).map((r) => ({ id: r.id, tool: r.tool ?? r.name, input: redactAny(r.input), result: redactAny(r.result), status: r.status })), ...(omittedReceipts(snapshot) ? { receipts_omitted: omittedReceipts(snapshot) } : {}) } : {}),
               ...(["changes", "code", "diff"].some((k) => required.has(k)) ? { changes: (snapshot.changes ?? []).map((c) => ({ path: redact(c.path), text: redact(c.text), context: redact(c.context) })) } : {}),
               ...(required.has("thinking") ? { thinking: (snapshot.thinking ?? []).filter((t) => t.completeness === "complete_segment").map((t) => ({ id: t.id, text: redact(t.text), kind: t.kind, completeness: t.completeness })) } : {}),
               ...(required.has("constraints") ? { constraints: redactAny(snapshot.constraints) } : {}),

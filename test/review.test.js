@@ -3,7 +3,7 @@ import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
-import { createReviewer } from "../src/review.js";
+import { createReviewer, MAX_REVIEW_RECEIPTS } from "../src/review.js";
 import { parsePolicy } from "../src/catalog.js";
 
 const policy = (id, extra = {}) => ({ id, description: id, events: ["response_end"], target: "response_span", requires: ["request", "response", "receipts"], priority: 50, detector: { type: "jev", question: { type: "choice", instructions: "Classify candidate.text against receipts.", criteria: { supported: "Supported", contradicted: "Contradicted", unknown: "Insufficient evidence" } }, decision: { violation: { option: "contradicted", min_probability: 0.9 }, unknown_options: ["unknown"], min_winner_probability: 0.7 } }, correction: "Correct the claim.", hash: `hash-${id}`, mode: "repair", ...extra });
@@ -176,4 +176,20 @@ test("a tool_call policy can require earlier calls while the call under review i
   sent = undefined;
   await reviewer.review({ eventKind: "tool_start", request: "find it", receipts: [{ ...earlier, status: "pending" }, current], currentTool: current, changes: [], thinking: [] }, [tools]);
   assert.equal(sent, undefined, "another pending call is still incomplete evidence");
+});
+
+test("only the last ten tool calls are sent; older ones are summarized by tool name", async () => {
+  let sent;
+  const answer = { answers: { q0: { type: "choice", choice: "supported", probabilities: { contradicted: 0.02, supported: 0.96, unknown: 0.02 } } } };
+  const reviewer = createReviewer({ client: { evaluate: async (arg) => { sent = arg; return answer; } } });
+  const older = Array.from({ length: 5 }, (_, i) => ({ id: `old-${i}`, tool: i === 0 ? "mcp__semble__search" : "Read", input: "{}", result: "ok", status: "completed" }));
+  const recent = Array.from({ length: MAX_REVIEW_RECEIPTS - 1 }, (_, i) => ({ id: `new-${i}`, tool: "Edit", input: "{}", result: "ok", status: "completed" }));
+  const current = { id: "now", tool: "Grep", input: "{}", status: "pending" };
+  const tools = policy("tools", { events: ["tool_start"], target: "tool_call", requires: ["receipts"] });
+  const result = await reviewer.review({ eventKind: "tool_start", request: "find it", receipts: [...older, ...recent, current], currentTool: current, changes: [], thinking: [] }, [tools]);
+  assert.equal(MAX_REVIEW_RECEIPTS, 10);
+  assert.equal(sent.state.receipts.length, 10);
+  assert.equal(sent.state.receipts.at(-1).id, "now");
+  assert.deepEqual(sent.state.receipts_omitted, { count: 5, tools: ["mcp__semble__search", "Read"] });
+  assert.equal(result.findings[0].evidence.slice(1).filter((e) => /^(old|new|now)/.test(e.id)).length, 10);
 });
