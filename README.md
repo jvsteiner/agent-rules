@@ -63,8 +63,10 @@ Configuration lives in `~/.config/agent-rules/config.json` or project
 }
 ```
 
-`repair` evaluates and corrects, `observe` records without steering, and `off`
-skips the policy. Broader starter policies remain observe-only while their useful
+`repair` evaluates and corrects. `observe` evaluates and records without
+steering: when an observe policy first fires on new evidence, the user sees
+`Agent Rules (observe): <rule> would have fired.` and the agent receives nothing.
+`off` skips the policy. Broader starter policies remain observe-only while their useful
 operating thresholds are evaluated. Probabilities do not establish intent.
 
 ```sh

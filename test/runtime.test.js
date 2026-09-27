@@ -105,7 +105,11 @@ test("observe findings never trigger repairs; arrays retain exact evidence and c
   const ctx = await make(); let current = finding("f", ["exact quote", "second line"], "observe");
   const reviewer = { review: async () => ({ findings: [current] }) };
   await handleEvent(event("user_prompt", { source: "host_user", userText: "task" }), ctx);
-  assert.equal((await handleEvent(event("response_end"), { ...ctx, reviewer })).action, "none");
+  const observed = await handleEvent(event("response_end"), { ...ctx, reviewer });
+  assert.equal(observed.action, "none"); assert.equal(observed.feedback, undefined);
+  assert.equal(observed.notice, "Agent Rules (observe): rule would have fired.");
+  const repeated = await handleEvent(event("response_end"), { ...ctx, reviewer });
+  assert.equal(repeated.notice, undefined);
   current = finding("f", ["exact quote", "second line"], "repair");
   const repair = await handleEvent(event("response_end"), { ...ctx, reviewer });
   assert.match(repair.feedback, /exact quote\nsecond line/); assert.match(repair.feedback, /attempt 1\/2/);

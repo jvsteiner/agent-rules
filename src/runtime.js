@@ -272,8 +272,11 @@ export async function handleEvent(event, { reviewer, policies = [], stateDir, co
         state.findings[key] = { ...finding, attempts: old?.attempts ?? 0, lastSeen: state.sequence,
           unchanged: old?.evidence === finding.evidence };
         if (activeFinding(finding) && (!old || hash(old.evidence ?? null) !== hash(finding.evidence ?? null) || old.mode !== finding.mode)) newOnes.push(finding);
-        else if (activeFinding(finding)) unchangedActive = true;
+        else if (activeFinding(finding) && finding.mode === "repair") unchangedActive = true;
       }
+      // Observe findings reach the user as a notice; the agent never sees them.
+      const observed = [...new Set(newOnes.filter((f) => f.mode === "observe").map((f) => f.ruleId ?? "policy"))];
+      const withObserved = (notice) => [notice, observed.length ? `Agent Rules (observe): ${observed.join(", ")} would have fired.` : ""].filter(Boolean).join(" ") || undefined;
       const findingEntries = Object.entries(state.findings).sort((a, b) => (a[1].lastSeen ?? 0) - (b[1].lastSeen ?? 0)).slice(-MAX_ITEMS);
       state.findings = Object.fromEntries(findingEntries);
       const cap = Math.max(0, Number(config.maxCorrectionsPerEpisode ?? 2));
@@ -288,11 +291,11 @@ export async function handleEvent(event, { reviewer, policies = [], stateDir, co
         state.pendingContinuationText = feedback;
         const effect = { action: event.kind === "response_end" ? "continue_turn" : "add_context",
           feedback,
-          notice: `Agent Rules: ${actionable.map((f) => f.ruleId ?? "policy").join(", ")} (${attempt}/${cap}).` };
+          notice: withObserved(`Agent Rules: ${actionable.map((f) => f.ruleId ?? "policy").join(", ")} (${attempt}/${cap}).`) };
         const done = complete(effect, feedback); await save(file, state); return done;
       }
       if (actionable.length && state.correctionsDelivered >= cap) {
-        const done = complete({ action: "none", notice: "Behavior review reached the correction limit for this request." });
+        const done = complete({ action: "none", notice: withObserved("Behavior review reached the correction limit for this request.") });
         await save(file, state); return done;
       }
       let effect = neutral;
@@ -300,6 +303,8 @@ export async function handleEvent(event, { reviewer, policies = [], stateDir, co
       else if (unchangedActive && state.correctionsDelivered >= cap) effect = { action: "none", notice: "Behavior review reached the correction limit for this request." };
       else if (unchangedActive) effect = { action: "none", notice: "No progress was observed on the previously reported issue." };
       else if (recovered) effect = { action: "none", notice: "Agent Rules review coverage has recovered." };
+      const notice = withObserved(effect.notice);
+      if (notice) effect = { ...effect, action: effect.action ?? "none", notice };
       const done = complete(effect); await save(file, state); return done;
     });
   } catch { return { action: "none", notice: "Agent Rules state storage is unavailable; review is observe-only." }; }
