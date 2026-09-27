@@ -10,7 +10,11 @@ rules remain supported without a TypeSafe key.
 ## Quick start
 
 Node 20.12 or newer is required. Committed `dist/` bundles include the runtime
-and YAML dependency; installed hooks never download packages.
+and YAML dependency; installed hooks never download packages. `npm run build`
+(also run by `npm ci` and `npm version`) bundles `dist/` and assembles the
+ignored `plugin/` folder, which holds only the manifests, hooks, bundles,
+policies, rules, and skills. The marketplace installs from `plugin/`, so build
+before installing or updating.
 
 ```sh
 npm ci
