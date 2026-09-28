@@ -3,7 +3,7 @@ import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
-import { createReviewer, MAX_REVIEW_RECEIPTS } from "../src/review.js";
+import { createReviewer, MAX_REVIEW_RECEIPTS, MAX_RECEIPT_RESULT } from "../src/review.js";
 import { parsePolicy } from "../src/catalog.js";
 
 const policy = (id, extra = {}) => ({ id, description: id, events: ["response_end"], target: "response_span", requires: ["request", "response", "receipts"], priority: 50, detector: { type: "jev", question: { type: "choice", instructions: "Classify candidate.text against receipts.", criteria: { supported: "Supported", contradicted: "Contradicted", unknown: "Insufficient evidence" } }, decision: { violation: { option: "contradicted", min_probability: 0.9 }, unknown_options: ["unknown"], min_winner_probability: 0.7 } }, correction: "Correct the claim.", hash: `hash-${id}`, mode: "repair", ...extra });
@@ -80,14 +80,14 @@ test("regex policies are evaluated locally and response target keeps one whole-a
 
 test("oversized evidence skips transport, marks the result unknown, and records truncation", async () => {
   let calls = 0;
-  const reviewer = createReviewer({ maxReviewRequests: 1, client: { evaluate: async () => { calls++; return { answers: {} }; } } });
+  const reviewer = createReviewer({ maxRequestChars: 24000, maxReviewRequests: 1, client: { evaluate: async () => { calls++; return { answers: {} }; } } });
   const huge = snapshot("All tests passed.");
-  huge.receipts[0].result = "x".repeat(30000);
-  const finding = (await reviewer.review(huge, [policy("a")])).findings[0];
+  huge.changes = [{ path: "big.js", text: "x".repeat(30000) }];
+  const finding = (await reviewer.review(huge, [policy("a", { requires: ["request", "response", "receipts", "changes"] })])).findings[0];
   assert.equal(calls, 0);
   assert.equal(finding.status, "unknown");
   assert.equal(finding.judgment.truncated, true);
-  assert.match(finding.evidence[2].text, /omitted/);
+  assert.ok(finding.evidence.some((e) => /omitted/.test(e.text)));
 });
 
 test("redacts obvious credentials before the client receives evidence", async () => {
@@ -137,13 +137,13 @@ test("unknown and unavailable findings include useful sanitized diagnostics and 
 
 test("oversized candidates are omitted individually while a small candidate is still reviewed", async () => {
   let sent;
-  const reviewer = createReviewer({ maxReviewRequests: 1, client: { evaluate: async (arg) => {
+  const reviewer = createReviewer({ maxRequestChars: 24000, maxReviewRequests: 1, client: { evaluate: async (arg) => {
     sent = arg;
     return { answers: { q0: { type: "choice", choice: "supported", probabilities: { contradicted: .01, supported: .99 } } } };
   } } });
   const small = { ...policy("small"), target: "response", requires: ["response"], detector: { type: "jev", question: { type: "choice", instructions: "Classify state.candidates[index]", criteria: { supported: "Supported", contradicted: "Contradicted" } }, decision: { violation: { option: "contradicted", min_probability: .9 }, min_winner_probability: .9 } } };
-  const huge = { ...policy("huge"), target: "response", requires: ["response", "receipts"] };
-  const s = snapshot("small answer"); s.receipts[0].result = "x".repeat(26000);
+  const huge = { ...policy("huge"), target: "response", requires: ["response", "changes"] };
+  const s = snapshot("small answer"); s.changes = [{ path: "big.js", text: "x".repeat(26000) }];
   for (const policies of [[small, huge], [huge, small]]) {
     const result = await reviewer.review(s, policies);
     assert.equal(Object.keys(sent.questions).length, 1);
@@ -192,4 +192,44 @@ test("only the last ten tool calls are sent; older ones are summarized by tool n
   assert.equal(sent.state.receipts.at(-1).id, "now");
   assert.deepEqual(sent.state.receipts_omitted, { count: 5, tools: ["mcp__semble__search", "Read"] });
   assert.equal(result.findings[0].evidence.slice(1).filter((e) => /^(old|new|now)/.test(e.id)).length, 10);
+});
+
+test("rules that judge the same tool call share one candidate entry in a single request", async () => {
+  const sent = [];
+  const answer = { type: "choice", choice: "supported", probabilities: { contradicted: 0.02, supported: 0.96, unknown: 0.02 } };
+  const reviewer = createReviewer({ client: { evaluate: async (arg) => { sent.push(arg); return { answers: Object.fromEntries(Object.keys(arg.questions).map((q) => [q, answer])) }; } } });
+  const current = { id: "now", tool: "Bash", input: "{\"command\":\"git push\"}", status: "pending" };
+  const rules = ["a", "b", "c"].map((id) => policy(id, { events: ["tool_start"], target: "tool_call", requires: [] }));
+  await reviewer.review({ eventKind: "tool_start", request: "x", receipts: [current], currentTool: current, changes: [], thinking: [] }, rules);
+  assert.equal(sent.length, 1);
+  assert.equal(sent[0].state.candidates.length, 1);
+  assert.deepEqual(sent[0].state.candidates[0].rules, ["a", "b", "c"]);
+  assert.ok(Object.values(sent[0].questions).every((q) => !/state\.candidates\[[12]\]/.test(q.instructions)));
+});
+
+test("a prefilter that does not match makes the rule clear without calling Jev", async () => {
+  let calls = 0;
+  const answer = { type: "choice", choice: "supported", probabilities: { contradicted: 0.02, supported: 0.96, unknown: 0.02 } };
+  const reviewer = createReviewer({ client: { evaluate: async (arg) => { calls++; return { answers: Object.fromEntries(Object.keys(arg.questions).map((q) => [q, answer])) }; } } });
+  const gate = policy("gate", { events: ["tool_start"], target: "tool_call", requires: [], prefilter: { pattern: "\\bgit\\s+push\\b", flags: "i" } });
+  const at = (command) => { const current = { id: "now", tool: "Bash", input: JSON.stringify({ command }), status: "pending" }; return { eventKind: "tool_start", request: "x", receipts: [current], currentTool: current, changes: [], thinking: [] }; };
+  const skipped = await reviewer.review(at("ls -la"), [gate]);
+  assert.equal(calls, 0);
+  assert.equal(skipped.findings[0].status, "clear");
+  assert.deepEqual(skipped.findings[0].judgment, { prefilter: "no match" });
+  await reviewer.review(at("git push origin main"), [gate]);
+  assert.equal(calls, 1);
+});
+
+test("earlier tool calls are trimmed to the start of their input and the end of their result; the call under review stays whole", async () => {
+  let sent;
+  const answer = { type: "choice", choice: "supported", probabilities: { contradicted: 0.02, supported: 0.96, unknown: 0.02 } };
+  const reviewer = createReviewer({ client: { evaluate: async (arg) => { sent = arg; return { answers: Object.fromEntries(Object.keys(arg.questions).map((q) => [q, answer])) }; } } });
+  const earlier = { id: "e", tool: "Bash", input: "npm test", result: "noise ".repeat(500) + "FINAL: 3 failed", status: "failure" };
+  const current = { id: "now", tool: "Edit", input: "x".repeat(5000), status: "pending" };
+  await reviewer.review({ eventKind: "tool_start", request: "fix", receipts: [earlier, current], currentTool: current, changes: [], thinking: [] }, [policy("t", { events: ["tool_start"], target: "tool_call", requires: ["receipts"] })]);
+  const [e, now] = sent.state.receipts;
+  assert.match(e.result, /^\[\d+ characters omitted\] [\s\S]*FINAL: 3 failed$/);
+  assert.ok(e.result.length < MAX_RECEIPT_RESULT + 40);
+  assert.equal(now.input.length, 5000);
 });

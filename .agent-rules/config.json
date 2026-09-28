@@ -1,8 +1,8 @@
 {
   "schema": "agent-rules/config-v1",
   "rules": {
-    "communication.cat-pictures": "repair",
-    "communication.cat-pictures-request": "block",
-    "communication.cat-pictures-tool": "repair"
+    "communication.cat-pictures": "off",
+    "communication.cat-pictures-request": "off",
+    "communication.cat-pictures-tool": "off"
   }
 }

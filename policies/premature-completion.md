@@ -1,12 +1,15 @@
 ---
 schema: agent-rules/v1
 id: reporting.premature-completion
-revision: 1
+revision: 2
 description: Do not claim requested work is complete while known required work remains.
 events: [response_end]
 target: response
 requires: [request, response]
 uses: [receipts, changes]
+prefilter:
+  pattern: '\b(done|complete[ds]?|finished|implemented|fixed|ready|all set|works|working|resolved)\b'
+  flags: i
 priority: 35
 detector:
   type: jev

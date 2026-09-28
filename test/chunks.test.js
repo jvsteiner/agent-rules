@@ -8,7 +8,7 @@ const snap = (response, receipts = []) => ({ eventKind: "response_end", request:
 
 test("oversized response is chunked with offsets and all clear chunks can aggregate", async () => {
   const calls = [];
-  const reviewer = createReviewer({ client: { evaluate: async (arg) => { calls.push(arg); return { answers: { q0: answer() }, usage: { input_tokens: 3 } }; } } });
+  const reviewer = createReviewer({ maxRequestChars: 24000, client: { evaluate: async (arg) => { calls.push(arg); return { answers: { q0: answer() }, usage: { input_tokens: 3 } }; } } });
   const finding = (await reviewer.review(snap("start " + "x".repeat(27000) + " tail-marker"), [p("large")])).findings[0];
   assert.ok(calls.length > 1);
   assert.ok(calls.every((c) => JSON.stringify({ state: c.state, questions: c.questions, model: c.model }).length <= 24000));
@@ -20,7 +20,7 @@ test("oversized response is chunked with offsets and all clear chunks can aggreg
 
 test("mixed chunk judgments abstain and retain raw judgments", async () => {
   let n = 0;
-  const reviewer = createReviewer({ client: { evaluate: async () => ({ answers: { q0: answer(n++ ? "contradicted" : "supported") } }) } });
+  const reviewer = createReviewer({ maxRequestChars: 24000, client: { evaluate: async () => ({ answers: { q0: answer(n++ ? "contradicted" : "supported") } }) } });
   const finding = (await reviewer.review(snap("y".repeat(27000)), [p("mixed")])).findings[0];
   assert.equal(finding.status, "unknown");
   assert.equal(finding.diagnostic.code, "chunk_conflict");
@@ -29,7 +29,7 @@ test("mixed chunk judgments abstain and retain raw judgments", async () => {
 
 test("a later chunk failure retains completed chunk judgments and abstains", async () => {
   let n = 0;
-  const reviewer = createReviewer({ client: { evaluate: async () => {
+  const reviewer = createReviewer({ maxRequestChars: 24000, client: { evaluate: async () => {
     if (n++ > 0) throw new Error("offline");
     return { answers: { q0: answer() } };
   } } });
@@ -41,7 +41,7 @@ test("a later chunk failure retains completed chunk judgments and abstains", asy
 
 test("request cap preserves a small review and marks overflow unknown", async () => {
   let calls = 0;
-  const reviewer = createReviewer({ maxReviewRequests: 1, client: { evaluate: async () => {
+  const reviewer = createReviewer({ maxRequestChars: 24000, maxReviewRequests: 1, client: { evaluate: async () => {
     calls++;
     return { answers: { q0: answer() } };
   } } });
@@ -55,7 +55,7 @@ test("request cap preserves a small review and marks overflow unknown", async ()
 
 test("chunk requests share one deadline and do not launch after it expires", async () => {
   let calls = 0;
-  const reviewer = createReviewer({ deadlineMs: 15, client: { evaluate: async () => {
+  const reviewer = createReviewer({ maxRequestChars: 24000, deadlineMs: 15, client: { evaluate: async () => {
     calls++;
     await new Promise((resolve) => setTimeout(resolve, 40));
     return { answers: { q0: answer() } };
@@ -71,7 +71,7 @@ test("chunk requests share one deadline and do not launch after it expires", asy
 test("multiple large receipt results remain bounded and keep short candidate context", async () => {
   const calls = [];
   const receipts = Array.from({ length: 9 }, (_, i) => ({ id: `r${i}`, tool: "shell", input: "short input", result: "z".repeat(3000), status: "complete" }));
-  const reviewer = createReviewer({ client: { evaluate: async (arg) => { calls.push(arg); return { answers: { q0: answer() } }; } } });
+  const reviewer = createReviewer({ maxRequestChars: 24000, client: { evaluate: async (arg) => { calls.push(arg); return { answers: { q0: answer() } }; } } });
   const finding = (await reviewer.review(snap("brief conclusion", receipts), [p("receipts", "response", ["response", "receipts"])])).findings[0];
   assert.equal(finding.status, "clear");
   assert.ok(calls.length <= 4);

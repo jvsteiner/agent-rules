@@ -260,14 +260,21 @@ missing evidence, an input budget limit, uncertain judgments, and unavailable
 evaluation. A large evidence requirement in one rule no longer skips unrelated
 small rules in the same review.
 
-Oversized evidence is reviewed in chunks within `maxReviewRequests` (default 4,
-maximum 8) and one shared review deadline. Each request stays within the plugin's
-24,000-character budget. Small checks retain the normal shared batch; additional
-requests cover overflow. Chunk results and coverage are inspectable. Conflicting
-results, missing chunks, or capture truncation cannot be reported as a clean bill
-of health. Generic aggregation is conservative: all chunks must agree for a clear
-or violation outcome; otherwise the result is inconclusive. Probabilities are not
-averaged across chunks.
+Each event is one Jev request: the shared evidence is sent once, rules that judge the
+same text share one candidate entry, and each rule adds only its question. A request
+may hold up to 80,000 characters, below Jev's limit of 32k tokens for the state and
+the longest question. Evidence larger than that is reviewed in chunks within
+`maxReviewRequests` (default 4, maximum 8) and one shared review deadline. Chunk
+results and coverage are inspectable. Conflicting results, missing chunks, or
+capture truncation cannot be reported as a clean bill of health. Generic
+aggregation is conservative: all chunks must agree for a clear or violation
+outcome; otherwise the result is inconclusive. Probabilities are not averaged
+across chunks.
+
+Jev charges per input token, and question text counts. A policy's `prefilter`
+pattern runs locally first; when it matches none of the candidates, the rule is
+clear without a Jev call. Tool and request rules should always have one, so that
+reads, tests, and other calls no rule concerns cost nothing.
 
 Chunking supports long responses, tool input/output, changed text, and exposed
 thinking text. It retains source metadata and short context, with 256-character

@@ -1,11 +1,14 @@
 ---
 schema: agent-rules/v1
 id: communication.cat-pictures-request
-revision: 1
+revision: 2
 description: Decline requests for cat pictures before any work starts.
 events: [user_prompt]
 target: request
 requires: [request]
+prefilter:
+  pattern: '\b(cats?|kitt(y|en|ens|ies)|felines?|tabby|tabbies|calico|siamese|persian|maine coon|ragdoll|sphynx)\b[\s\S]*\b(pics?|pictures?|photos?|photographs?|images?|imgs?|jpe?g|png|gif|webp|bitmap|memes?|wallpapers?|drawings?|illustrations?|sketch(es)?|portraits?|selfies?|snapshots?|filetype)\b|\b(pics?|pictures?|photos?|photographs?|images?|imgs?|jpe?g|png|gif|webp|bitmap|memes?|wallpapers?|drawings?|illustrations?|sketch(es)?|portraits?|selfies?|snapshots?|filetype)\b[\s\S]*\b(cats?|kitt(y|en|ens|ies)|felines?|tabby|tabbies|calico|siamese|persian|maine coon|ragdoll|sphynx)\b'
+  flags: i
 priority: 20
 detector:
   type: jev

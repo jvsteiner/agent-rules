@@ -97,7 +97,7 @@ The user's rule: ${f.description ?? "(no description)"}
 Evidence: ${shownEvidence(f.evidence) || "(none provided)"}
 Correction: ${f.correction}`;
 const UNSURE = new Set(["below_threshold", "unknown_choice", "between_thresholds", "inconclusive"]);
-const MAX_EARLIER_REQUESTS = 3, MAX_EARLIER_REQUEST = 1500, MAX_PREVIOUS_RESPONSE = 2000;
+const MAX_EARLIER_REQUESTS = 3, MAX_EARLIER_REQUEST = 600, MAX_PREVIOUS_RESPONSE = 1000;
 const REVIEWED = ["user_prompt", "tool_start", "tool_result", "response_end"];
 const activeFinding = (f) => ["finding", "violation", "fail", "failed", "noncompliant"].includes(String(f.status).toLowerCase());
 const findingKey = (f) => hash([f.ruleId, f.id, f.evidence, activeFinding(f) ? "active" : String(f.status).toLowerCase()]);

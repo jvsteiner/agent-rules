@@ -71,3 +71,11 @@ test('rejects duplicate IDs within one directory', async () => {
     assert.ok(result.diagnostics.some(d => /duplicate/i.test(JSON.stringify(d))));
   } finally { await rm(root, { recursive: true, force: true }); }
 });
+
+test("prefilter must be a valid pattern with supported flags", async () => {
+  const { parsePolicy } = await import("../src/catalog.js");
+  const base = (prefilter) => `---\nschema: agent-rules/v1\nid: p\ndescription: d\nevents: [tool_start]\ntarget: tool_call\nrequires: []\n${prefilter}\npriority: 1\ndetector:\n  type: regex\n  pattern: x\n---\n`;
+  assert.equal(parsePolicy(base("prefilter:\n  pattern: 'git\\s+push'\n  flags: i")).prefilter.pattern, "git\\s+push");
+  assert.throws(() => parsePolicy(base("prefilter:\n  pattern: '('")), /prefilter.pattern: invalid regular expression/);
+  assert.throws(() => parsePolicy(base("prefilter:\n  pattern: x\n  flags: g")), /prefilter.flags/);
+});

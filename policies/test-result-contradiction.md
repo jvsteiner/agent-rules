@@ -1,11 +1,14 @@
 ---
 schema: agent-rules/v1
 id: reporting.test-result-contradiction
-revision: 1
+revision: 2
 description: Report test results consistently with observed execution.
 events: [response_end]
 target: response_span
 requires: [request, response, receipts]
+prefilter:
+  pattern: '\b(tests?|specs?|pass(es|ed|ing)?|fail(s|ed|ing|ures?)?|green|red|CI|build|checks?)\b'
+  flags: i
 priority: 80
 detector:
   type: jev

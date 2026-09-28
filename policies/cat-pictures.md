@@ -1,7 +1,7 @@
 ---
 schema: agent-rules/v1
 id: communication.cat-pictures
-revision: 1
+revision: 2
 description: Do not discuss cat pictures.
 events: [response_end]
 target: response

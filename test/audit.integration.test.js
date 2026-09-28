@@ -17,7 +17,7 @@ test('large tool receipts do not silence cat policy and next prompt preserves in
     await handleEvent(event('user_prompt', { source: 'host_user', userText: 'Fix my test.' }), { stateDir });
     for (let i = 0; i < 3; i++) await handleEvent(event('tool_result', { tool: { id: `t${i}`, name: 'shell', input: {}, result: 'x'.repeat(10000), status: 'completed' } }), { stateDir });
     let calls = 0;
-    const reviewer = createReviewer({ maxReviewRequests: 1, client: { evaluate: async ({ state, questions }) => {
+    const reviewer = createReviewer({ maxRequestChars: 24000, maxReviewRequests: 1, client: { evaluate: async ({ state, questions }) => {
       calls++;
       assert.equal(state.receipts, undefined, 'oversized unrelated receipts must not enter the small review');
       return { answers: Object.fromEntries(Object.entries(questions).map(([id, q]) => {
@@ -49,7 +49,7 @@ test('runtime passes a long response through chunk review including its tail', a
     const base = { platform: 'claude', sessionId: 'chunk-regression', actorId: 'main' };
     await handleEvent({ ...base, kind: 'user_prompt', source: 'host_user', userText: 'Describe this image.' }, { stateDir });
     let calls = 0, tailSeen = false;
-    const reviewer = createReviewer({ maxReviewRequests: 4, client: { evaluate: async ({ state, questions, model }) => {
+    const reviewer = createReviewer({ maxRequestChars: 24000, maxReviewRequests: 4, client: { evaluate: async ({ state, questions, model }) => {
       calls++;
       assert.ok(JSON.stringify({ state, questions, model }).length <= 24000);
       tailSeen ||= state.candidates.some(c => c.text.includes('TAIL_SENTINEL'));

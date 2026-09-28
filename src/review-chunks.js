@@ -1,4 +1,6 @@
-export const MAX_REVIEW_CHARS = 24000;
+// One review is one Jev request whenever it fits. Jev allows 32k tokens for the state plus the
+// longest question (about 100k characters of English); this budget stays safely below that.
+export const MAX_REVIEW_CHARS = 80000;
 const OVERLAP = 256;
 
 // Keep record identities and short context intact. Long evidence fields advance

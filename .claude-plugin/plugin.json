@@ -1,6 +1,6 @@
 {
   "name": "agent-rules",
-  "version": "0.2.19",
+  "version": "0.2.22",
   "description": "Visible, bounded behavioral corrections with Jev and editable policies.",
   "author": {
     "name": "Jamie Steiner"

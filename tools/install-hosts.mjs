@@ -4,7 +4,9 @@
 // Users install the published npm package instead (see README.md).
 // Run through `make install-local` or `npm run install-hosts`, which build first.
 import { spawnSync } from 'node:child_process';
-import { readFile } from 'node:fs/promises';
+import { cp, mkdtemp, readFile, readdir, rm } from 'node:fs/promises';
+import { existsSync } from 'node:fs';
+import { homedir, tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { installOmp } from '../src/install-omp.js';
 
@@ -28,8 +30,20 @@ function host(name, { remove, add, install, update }) {
 
 host('claude', { remove: ['plugin', 'marketplace', 'remove', 'agent-rules'], add: ['plugin', 'marketplace', 'add', plugin],
   install: ['plugin', 'install', 'agent-rules@agent-rules'], update: ['plugin', 'update', 'agent-rules@agent-rules'] });
+// Codex deletes the previous version folder on install, but a running session keeps calling
+// its hooks at the old path and fails with exit code 1 on every tool call. Keep the most
+// recent earlier versions so open sessions work until they restart.
+const codexCache = join(homedir(), '.codex', 'plugins', 'cache', 'agent-rules', 'agent-rules');
+const KEEP_CODEX_VERSIONS = 5;
+const byVersion = (a, b) => a.localeCompare(b, undefined, { numeric: true });
+const earlier = existsSync(codexCache) ? (await readdir(codexCache)).filter((v) => v !== version).sort(byVersion).slice(-KEEP_CODEX_VERSIONS) : [];
+const saved = earlier.length ? await mkdtemp(join(tmpdir(), 'agent-rules-codex-')) : undefined;
+for (const v of earlier) await cp(join(codexCache, v), join(saved, v), { recursive: true });
 host('codex', { remove: ['plugin', 'marketplace', 'remove', 'agent-rules'], add: ['plugin', 'marketplace', 'add', plugin],
   install: ['plugin', 'add', 'agent-rules@agent-rules'] });
+for (const v of earlier) if (!existsSync(join(codexCache, v))) await cp(join(saved, v), join(codexCache, v), { recursive: true });
+if (saved) await rm(saved, { recursive: true, force: true });
+if (existsSync(codexCache)) for (const v of (await readdir(codexCache)).filter((x) => x !== version).sort(byVersion).slice(0, -KEEP_CODEX_VERSIONS)) await rm(join(codexCache, v), { recursive: true, force: true });
 results.push(...await installOmp({ pluginDir: plugin, rulesDir: join(root, 'rules') }));
 
 console.log(results.join('\n'));

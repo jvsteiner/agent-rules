@@ -1,13 +1,23 @@
 import { createHash } from "node:crypto";
 import { createJevClient } from "./jev.js";
-import { chunkPayload } from "./review-chunks.js";
+import { chunkPayload, MAX_REVIEW_CHARS } from "./review-chunks.js";
 
 const hash = (value) => createHash("sha256").update(value).digest("hex");
-const MAX_REVIEW_CHARS = 24000;
 // Only the most recent tool calls are sent, so a long turn cannot push every other
 // rule out of the shared request. Older calls are summarized by tool name.
 export const MAX_REVIEW_RECEIPTS = 10;
-const recentReceipts = (snapshot) => (snapshot.receipts ?? []).slice(-MAX_REVIEW_RECEIPTS);
+// Earlier calls are trimmed: rules need what was run and how it ended, not full outputs.
+// The input keeps its start and the result its end, where commands report their outcome.
+// The call under review stays whole, because it is the text being judged.
+export const MAX_RECEIPT_INPUT = 600, MAX_RECEIPT_RESULT = 600;
+const clip = (value, limit, keep) => {
+  const text = typeof value === "string" ? value : value == null ? value : JSON.stringify(value);
+  if (typeof text !== "string" || text.length <= limit) return value;
+  const omitted = `[${text.length - limit} characters omitted]`;
+  return keep === "start" ? `${text.slice(0, limit)} ${omitted}` : `${omitted} ${text.slice(-limit)}`;
+};
+const recentReceipts = (snapshot) => (snapshot.receipts ?? []).slice(-MAX_REVIEW_RECEIPTS).map((r) =>
+  r.id !== undefined && r.id === snapshot.currentTool?.id ? r : { ...r, input: clip(r.input, MAX_RECEIPT_INPUT, "start"), result: clip(r.result, MAX_RECEIPT_RESULT, "end") });
 function omittedReceipts(snapshot) {
   const older = (snapshot.receipts ?? []).slice(0, -MAX_REVIEW_RECEIPTS);
   return older.length ? { count: older.length, tools: [...new Set(older.map((r) => r.tool ?? r.name).filter(Boolean))] } : undefined;
@@ -151,7 +161,7 @@ function sourceEvidence(snapshot, policy, candidate) {
   return out;
 }
 
-export function createReviewer({ client = createJevClient(), model = "jev-1.13.0", deadlineMs = 2000, maxReviewRequests = 4 } = {}) {
+export function createReviewer({ client = createJevClient(), model = "jev-1.13.0", deadlineMs = 2000, maxReviewRequests = 4, maxRequestChars = MAX_REVIEW_CHARS } = {}) {
   return {
     async review(snapshot, policies, { signal } = {}) {
       const started = Date.now();
@@ -159,7 +169,18 @@ export function createReviewer({ client = createJevClient(), model = "jev-1.13.0
       const tasks = [];
       for (const policy of policies ?? []) {
         if (policy.events?.length && !policy.events.includes(snapshot.eventKind)) continue;
-        const candidates = spans(snapshot, policy.target);
+        let candidates = spans(snapshot, policy.target);
+        // The prefilter is a free local check: a candidate it does not match is clear without a Jev call.
+        if (policy.prefilter && candidates.length) {
+          const pattern = new RegExp(policy.prefilter.pattern, policy.prefilter.flags ?? "");
+          const matched = candidates.filter((candidate) => { pattern.lastIndex = 0; return pattern.test(candidate.text); });
+          if (!matched.length) {
+            const evidence = [{ id: candidates[0].id, text: redact(candidates[0].text) }];
+            findings.push({ id: hash(`${policy.id}|${policy.hash ?? ""}|prefilter|${JSON.stringify(evidence)}`).slice(0, 20), ruleId: policy.id, status: "clear", evidence, judgment: { prefilter: "no match" }, policyHash: policy.hash, correction: policy.correction, description: policy.description, priority: policy.priority, mode: policy.mode });
+            continue;
+          }
+          candidates = matched;
+        }
         if (missingEvidence(snapshot, policy.requires).length || candidates.length === 0) {
           const missing = missingEvidence(snapshot, policy.requires);
           const diagnostic = missing.length
@@ -202,6 +223,13 @@ export function createReviewer({ client = createJevClient(), model = "jev-1.13.0
           const timeout = new Promise((_, reject) => { timer = setTimeout(() => { deadlineExpired = true; controller.abort(); reject(new Error("review deadline exceeded")); }, deadlineMs); });
           const buildPayload = (selected) => {
             const required = new Set(selected.flatMap(({ policy }) => [...(policy.requires ?? []), ...(policy.uses ?? [])]));
+            // Rules that judge the same text share one candidate entry, so the subject is sent once.
+            const candidates = [], slot = [], seen = new Map();
+            for (const { policy, candidate } of selected) {
+              const key = JSON.stringify([candidate.id, candidate.text, candidate.context]);
+              if (!seen.has(key)) { seen.set(key, candidates.length); candidates.push({ id: candidate.id, text: redact(candidate.text), context: redact(candidate.context), rules: [] }); }
+              slot.push(seen.get(key)); candidates[seen.get(key)].rules.push(policy.id);
+            }
             const state = {
               ...(required.has("request") ? { request: redact(snapshot.request) } : {}),
               ...(required.has("response") || selected.some(({ policy }) => policy.target.startsWith("response")) ? { response: redact(snapshot.response) } : {}),
@@ -211,16 +239,16 @@ export function createReviewer({ client = createJevClient(), model = "jev-1.13.0
               ...(required.has("constraints") ? { constraints: redactAny(snapshot.constraints) } : {}),
               ...(required.has("conversation") && snapshot.conversation ? { conversation: redactAny(snapshot.conversation) } : {}),
               ...(Object.keys(snapshot.coverage ?? {}).length ? { coverage: redactAny(snapshot.coverage) } : {}),
-              candidates: selected.map(({ policy, candidate }) => ({ id: candidate.id, text: redact(candidate.text), context: redact(candidate.context), rule: policy.id })),
+              candidates,
             };
             const questions = Object.fromEntries(selected.map(({ policy }, i) => {
               const question = policy.detector.question;
-              const reference = `state.candidates[${i}]`;
+              const reference = `state.candidates[${slot[i]}]`;
               const instructions = typeof question.instructions === "string"
                 ? question.instructions.replaceAll("state.candidates[index]", reference).includes(reference)
                   ? question.instructions.replaceAll("state.candidates[index]", reference)
                   : `${question.instructions}\nFor this question, evaluate only ${reference}.`
-                : { ...question.instructions, candidate_index_to_evaluate: i };
+                : { ...question.instructions, candidate_index_to_evaluate: slot[i] };
               return [`q${i}`, { ...question, instructions }];
             }));
             return { state, questions };
@@ -230,7 +258,7 @@ export function createReviewer({ client = createJevClient(), model = "jev-1.13.0
           for (let taskIndex = 0; taskIndex < tasks.length; taskIndex++) {
             const trial = [...selected, tasks[taskIndex]];
             const { state, questions } = buildPayload(trial);
-            if (JSON.stringify({ state, questions, model }).length <= MAX_REVIEW_CHARS) selected.push(tasks[taskIndex]);
+            if (JSON.stringify({ state, questions, model }).length <= maxRequestChars) selected.push(tasks[taskIndex]);
             else oversized.push(taskIndex);
           }
           const requests = [];
@@ -239,7 +267,7 @@ export function createReviewer({ client = createJevClient(), model = "jev-1.13.0
             if (requests.length >= maxReviewRequests) { omittedTaskIndexes.add(taskIndex); continue; }
             const built = buildPayload([tasks[taskIndex]]);
             const remaining = maxReviewRequests - requests.length;
-            const pieces = chunkPayload({ state: built.state, questions: built.questions, model }, { maxChars: MAX_REVIEW_CHARS - 512, maxChunks: remaining });
+            const pieces = chunkPayload({ state: built.state, questions: built.questions, model }, { maxChars: maxRequestChars - 512, maxChunks: remaining });
             if (!pieces.length) { omittedTaskIndexes.add(taskIndex); continue; }
             expectedChunks.set(taskIndex, pieces.length);
             pieces.forEach((piece) => requests.push({ tasks: [tasks[taskIndex]], ...piece.payload, chunkInfo: piece.coverage }));
@@ -295,7 +323,7 @@ export function createReviewer({ client = createJevClient(), model = "jev-1.13.0
         const status = overBudget ? "unknown" : incompleteSnapshot ? "unknown" : answer?.type === "chunk_aggregate" ? answer.status : requestUnavailable && !answer ? "unavailable" : !answer ? "unavailable" : classify(answer, policy);
         const evidence = sourceEvidence(snapshot, policy, candidate);
         const shownEvidence = overBudget ? evidence.map(({ id }) => ({ id, text: "[omitted: review evidence exceeded the character budget]" })) : evidence;
-        const diagnostic = overBudget ? { code: "input_budget_exceeded", message: `This policy's evidence exceeded the ${MAX_REVIEW_CHARS}-character request limit; it was omitted from the classifier call.` }
+        const diagnostic = overBudget ? { code: "input_budget_exceeded", message: `This policy's evidence exceeded the ${maxRequestChars}-character request limit; it was omitted from the classifier call.` }
           : incompleteSnapshot ? { code: "partial_review", message: "The snapshot reports truncated source evidence; the review cannot support a complete finding.", truncatedSources: snapshot.coverage.truncatedSources ?? [] }
           : answer?.type === "chunk_aggregate" && !answer.complete ? { code: "partial_review", message: "Not all evidence chunks received a complete judgment." }
           : answer?.type === "chunk_aggregate" && status === "unknown" ? { code: "chunk_conflict", message: "Evidence chunks produced mixed or inconclusive judgments." }
@@ -305,7 +333,7 @@ export function createReviewer({ client = createJevClient(), model = "jev-1.13.0
           : status === "unavailable" ? { code: "malformed_answer", message: "The classifier answer did not match the policy's declared question format." }
           : status === "unknown" ? answer?.type === "chunk_aggregate" ? { code: "chunk_conflict", message: "Evidence chunks produced mixed or inconclusive judgments." } : uncertainDiagnostic(answer, policy)
           : { code: status, message: status === "clear" ? "The classification met the policy's clear threshold." : "The classification met the policy's violation threshold.", decision: policy.detector.decision };
-        findings.push({ id: hash(`${policy.id}|${policy.hash ?? ""}|${JSON.stringify(evidence)}`).slice(0, 20), ruleId: policy.id, status, diagnostic, evidence: shownEvidence, judgment: overBudget ? { reason: "evidence_budget_exceeded", truncated: true, limitChars: MAX_REVIEW_CHARS } : answer ?? null, policyHash: policy.hash, correction: policy.correction, description: policy.description, priority: policy.priority, mode: policy.mode });
+        findings.push({ id: hash(`${policy.id}|${policy.hash ?? ""}|${JSON.stringify(evidence)}`).slice(0, 20), ruleId: policy.id, status, diagnostic, evidence: shownEvidence, judgment: overBudget ? { reason: "evidence_budget_exceeded", truncated: true, limitChars: maxRequestChars } : answer ?? null, policyHash: policy.hash, correction: policy.correction, description: policy.description, priority: policy.priority, mode: policy.mode });
       });
       return { findings, usage, model: actualModel ?? model, elapsedMs: Date.now() - started };
     },
