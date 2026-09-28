@@ -7,7 +7,7 @@
   "plugins": [
     {
       "name": "agent-rules",
-      "version": "0.2.22",
+      "version": "0.2.23",
       "source": {
         "source": "npm",
         "package": "@jvsteiner/agent-rules"
