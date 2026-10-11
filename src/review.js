@@ -42,6 +42,10 @@ function spans(snapshot, target) {
     const tool = snapshot.currentTool;
     return tool ? [{ id: tool.id ?? "tool-call", text: [tool.tool ?? tool.name, tool.input].filter(Boolean).join("\n"), context: "" }] : [];
   }
+  if (target === "tool_result") {
+    const tool = snapshot.currentTool;
+    return tool && tool.result ? [{ id: tool.id ?? "tool-result", text: String(tool.result), context: tool.tool ?? tool.name ?? "" }] : [];
+  }
   if (target === "response") return [{ id: "response", text: String(snapshot.response ?? ""), context: "" }].filter((x) => x.text.trim());
   if (target === "response_span") {
     const lines = String(snapshot.response ?? "").split(/\n\s*\n/).map((text) => text.trim()).filter(Boolean);
@@ -70,16 +74,19 @@ function missingEvidence(snapshot, requires = []) {
   return requires.filter((key) => !requiredPresent(snapshot, [key]));
 }
 
-function coverageAffects(snapshot, policy) {
+export function coverageAffects(snapshot, policy) {
   const sources = snapshot.coverage?.truncatedSources ?? [];
   if (!sources.length) return snapshot.coverage?.complete === false;
-  const required = new Set(policy.requires ?? []);
+  const required = new Set([...(policy.requires ?? []), ...(policy.uses ?? [])]);
   if (policy.target.startsWith("response")) required.add("response");
   if (policy.target === "request") required.add("request");
-  if (policy.target === "tool_call") required.add("receipts");
+  const current = snapshot.currentTool;
+  const currentGroup = policy.target === 'tool_call' ? 'input' : policy.target === 'tool_result' ? 'result' : null;
+  if (currentGroup && current?.[`${currentGroup}Truncated`]) return true;
+  const currentSource = currentGroup ? `receipt:${current?.id ?? 'current'}:${currentGroup}` : null;
   if (policy.target.startsWith("thinking")) required.add("thinking");
   if (policy.target === "code_change") required.add("changes");
-  return sources.some((source) => source === "unknown" || source === "request" && required.has("request") || source === "response" && required.has("response") || source.startsWith("receipt:") && (required.has("receipts") || required.has("tool_calls")) || source.startsWith("change:") && ["changes", "code", "diff"].some((x) => required.has(x)) || source.startsWith("thinking:") && required.has("thinking"));
+  return sources.some((source) => source === "unknown" || source === currentSource || source === "request" && required.has("request") || source === "response" && required.has("response") || source.startsWith("receipt:") && (required.has("receipts") || required.has("tool_calls")) || source.startsWith("change:") && ["changes", "code", "diff"].some((x) => required.has(x)) || source.startsWith("thinking:") && required.has("thinking"));
 }
 
 function classify(answer, policy) {
@@ -176,7 +183,8 @@ export function createReviewer({ client = createJevClient(), model = "jev-1.13.0
           const matched = candidates.filter((candidate) => { pattern.lastIndex = 0; return pattern.test(candidate.text); });
           if (!matched.length) {
             const evidence = [{ id: candidates[0].id, text: redact(candidates[0].text) }];
-            findings.push({ id: hash(`${policy.id}|${policy.hash ?? ""}|prefilter|${JSON.stringify(evidence)}`).slice(0, 20), ruleId: policy.id, status: "clear", evidence, judgment: { prefilter: "no match" }, policyHash: policy.hash, correction: policy.correction, description: policy.description, priority: policy.priority, mode: policy.mode });
+            const incomplete = coverageAffects(snapshot, policy);
+            findings.push({ id: hash(`${policy.id}|${policy.hash ?? ""}|prefilter|${JSON.stringify(evidence)}`).slice(0, 20), ruleId: policy.id, status: incomplete ? 'unknown' : "clear", evidence, judgment: { prefilter: "no match" }, ...(incomplete ? { diagnostic: { code: 'partial_review', message: 'The candidate evidence is incomplete.' } } : {}), policyHash: policy.hash, correction: policy.correction, description: policy.description, priority: policy.priority, mode: policy.mode });
             continue;
           }
           candidates = matched;
@@ -197,8 +205,10 @@ export function createReviewer({ client = createJevClient(), model = "jev-1.13.0
           }
           for (const candidate of candidates) {
             const evidence = sourceEvidence(snapshot, policy, candidate);
-            const status = pattern.test(candidate.text) ? "violation" : "clear";
-            findings.push({ id: hash(`${policy.id}|${policy.hash ?? ""}|${JSON.stringify(evidence)}`).slice(0, 20), ruleId: policy.id, status, evidence, judgment: { matched: status === "violation" }, policyHash: policy.hash, correction: policy.correction, description: policy.description, priority: policy.priority, mode: policy.mode });
+            const matched = pattern.test(candidate.text);
+            const incomplete = coverageAffects(snapshot, policy);
+            const status = incomplete ? 'unknown' : matched ? "violation" : "clear";
+            findings.push({ id: hash(`${policy.id}|${policy.hash ?? ""}|${JSON.stringify(evidence)}`).slice(0, 20), ruleId: policy.id, status, evidence, judgment: { matched }, ...(incomplete ? { diagnostic: { code: 'partial_review', message: 'The candidate evidence is incomplete.' } } : {}), policyHash: policy.hash, correction: policy.correction, description: policy.description, priority: policy.priority, mode: policy.mode });
             pattern.lastIndex = 0;
           }
           continue;

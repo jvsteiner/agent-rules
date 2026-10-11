@@ -6,13 +6,14 @@ import {tmpdir} from 'node:os';
 import {join,resolve} from 'node:path';
 
 function setup(){
- const cwd=mkdtempSync(join(tmpdir(),'agent-rules e2e '));mkdirSync(join(cwd,'.agent-rules/rules'),{recursive:true});
+ const cwd=mkdtempSync(join(tmpdir(),'agent-rules e2e '));mkdirSync(join(cwd,'fixture-plugin/policies'),{recursive:true});mkdirSync(join(cwd,'.agent-rules'),{recursive:true});
  writeFileSync(join(cwd,'.agent-rules/config.json'),JSON.stringify({rules:{'reporting.test-result-contradiction':'off','reporting.premature-completion':'off','communication.unexplained-jargon':'off'},maxCorrectionsPerEpisode:2}));
- writeFileSync(join(cwd,'.agent-rules/rules/demo.md'),`---\nschema: agent-rules/v1\nid: demo\ndescription: Replace the deliberate trigger.\nevents: [response_end]\ntarget: response\nrequires: [response]\npriority: 90\ndetector:\n  type: regex\n  pattern: TRIGGER\nintervention: repair\n---\n## Correction\nReplace TRIGGER with CORRECTED.\n`);
+ writeFileSync(join(cwd,'fixture-plugin/policies/demo.md'),`---\nschema: agent-rules/v1\nid: demo\ndescription: Replace the deliberate trigger.\nevents: [response_end]\ntarget: response\nrequires: [response]\npriority: 90\ndetector:\n  type: regex\n  pattern: TRIGGER\nintervention: repair\n---\n## Correction\nReplace TRIGGER with CORRECTED.\n`);
+ cpSync(resolve('plugin'),join(cwd,'fixture-plugin'),{recursive:true});
  return cwd;
 }
-function call(cwd,platform,payload,hook=resolve('bin/behavior-hook.js')){
- const r=spawnSync(process.execPath,[hook,platform],{input:JSON.stringify({cwd,session_id:'integration-session',...payload}),encoding:'utf8',env:{...process.env,AGENT_RULES_STATE_DIR:join(cwd,'state'),AGENT_RULES_LEGACY:'0'}});
+function call(cwd,platform,payload,hook=join(cwd,'fixture-plugin/dist/behavior-hook.js')){
+ const r=spawnSync(process.execPath,[hook,platform],{input:JSON.stringify({cwd,session_id:'integration-session',...payload}),encoding:'utf8',env:{...process.env,AGENT_RULES_CONFIG:join(cwd,'.agent-rules/config.json'),AGENT_RULES_STATE_DIR:join(cwd,'state'),AGENT_RULES_LEGACY:'0'}});
  assert.equal(r.status,0,r.stderr);return r.stdout?JSON.parse(r.stdout):{};
 }
 for(const platform of ['claude','codex'])test(`${platform} real hook subprocess: correction, explicit recheck, then clear`,()=>{
@@ -25,7 +26,7 @@ for(const platform of ['claude','codex'])test(`${platform} real hook subprocess:
 for(const platform of ['claude','codex'])test(`${platform} real hook subprocess: prompt policy adds context, tool policy denies the call`,()=>{
  const cwd=setup();
  for(const [id,events,target,pattern] of [['prompt-probe','user_prompt','request','BLOCKED_TOPIC'],['tool-probe','tool_start','tool_call','BLOCKED_QUERY']])
-  writeFileSync(join(cwd,`.agent-rules/rules/${id}.md`),`---\nschema: agent-rules/v1\nid: ${id}\ndescription: Probe ${id}.\nevents: [${events}]\ntarget: ${target}\nrequires: []\npriority: 90\ndetector:\n  type: regex\n  pattern: ${pattern}\nintervention: repair\n---\n## Correction\nDo not handle ${pattern}.\n`);
+  writeFileSync(join(cwd,`fixture-plugin/policies/${id}.md`),`---\nschema: agent-rules/v1\nid: ${id}\ndescription: Probe ${id}.\nevents: [${events}]\ntarget: ${target}\nrequires: []\npriority: 90\ndetector:\n  type: regex\n  pattern: ${pattern}\nintervention: repair\n---\n## Correction\nDo not handle ${pattern}.\n`);
  const prompt=call(cwd,platform,{hook_event_name:'UserPromptSubmit',prompt:'Research BLOCKED_TOPIC.'});
  assert.equal(prompt.hookSpecificOutput.hookEventName,'UserPromptSubmit');assert.match(prompt.hookSpecificOutput.additionalContext,/Do not handle BLOCKED_TOPIC/);
  assert.deepEqual(call(cwd,platform,{hook_event_name:'PreToolUse',tool_name:'Bash',tool_use_id:'a',tool_input:{command:'ls'}}),{});
@@ -34,20 +35,22 @@ for(const platform of ['claude','codex'])test(`${platform} real hook subprocess:
 });
 for(const platform of ['claude','codex'])test(`${platform} real hook subprocess: block-mode prompt policy rejects the prompt`,()=>{
  const cwd=setup();
- writeFileSync(join(cwd,'.agent-rules/rules/prompt-block.md'),`---\nschema: agent-rules/v1\nid: prompt-block\ndescription: Probe prompt-block.\nevents: [user_prompt]\ntarget: request\nrequires: []\npriority: 90\ndetector:\n  type: regex\n  pattern: BLOCKED_TOPIC\nintervention: block\n---\n## Correction\nDo not handle BLOCKED_TOPIC.\n`);
+ writeFileSync(join(cwd,'fixture-plugin/policies/prompt-block.md'),`---\nschema: agent-rules/v1\nid: prompt-block\ndescription: Probe prompt-block.\nevents: [user_prompt]\ntarget: request\nrequires: []\npriority: 90\ndetector:\n  type: regex\n  pattern: BLOCKED_TOPIC\nintervention: block\n---\n## Correction\nDo not handle BLOCKED_TOPIC.\n`);
  const rejected=call(cwd,platform,{hook_event_name:'UserPromptSubmit',prompt:'Research BLOCKED_TOPIC.'});
  assert.equal(rejected.decision,'block');assert.equal(rejected.reason,'Agent Rules blocked this request. prompt-block: Probe prompt-block.');
  assert.deepEqual(call(cwd,platform,{hook_event_name:'UserPromptSubmit',prompt:'Something else.'}),{});
 });
 test('session start warns once when TYPESAFE_API_KEY is missing and Jev policies are active',()=>{
- const cwd=setup();const env={...process.env,AGENT_RULES_STATE_DIR:join(cwd,'state'),AGENT_RULES_LEGACY:'0'};
- const start=(key)=>{const e={...env};if(key)e.TYPESAFE_API_KEY=key;else delete e.TYPESAFE_API_KEY;const r=spawnSync(process.execPath,[resolve('bin/behavior-hook.js'),'claude'],{input:JSON.stringify({cwd,session_id:'key-session',hook_event_name:'SessionStart'}),encoding:'utf8',env:e});return r.stdout?JSON.parse(r.stdout):{};};
+ const cwd=setup();
+ writeFileSync(join(cwd,'fixture-plugin/policies/key-probe.md'),'---\nschema: agent-rules/v1\nid: key-probe\ndescription: Probe missing key.\nevents: [response_end]\ntarget: response\nrequires: []\npriority: 1\ndetector:\n  type: jev\n  question:\n    type: noul\n    instructions: Is this a probe?\n  decision:\n    violation_at_or_above: 0.9\n    clear_at_or_below: 0.1\nintervention: observe\n---\n');
+ const env={...process.env,AGENT_RULES_CONFIG:join(cwd,'.agent-rules/config.json'),AGENT_RULES_STATE_DIR:join(cwd,'state'),AGENT_RULES_LEGACY:'0'};
+ const start=(key)=>{const e={...env};if(key)e.TYPESAFE_API_KEY=key;else delete e.TYPESAFE_API_KEY;const r=spawnSync(process.execPath,[join(cwd,'fixture-plugin/dist/behavior-hook.js'),'claude'],{input:JSON.stringify({cwd,session_id:'key-session',hook_event_name:'SessionStart'}),encoding:'utf8',env:e});return r.stdout?JSON.parse(r.stdout):{};};
  assert.match(start().systemMessage??'',/TYPESAFE_API_KEY is not set/);
  assert.doesNotMatch(start('test-key').systemMessage??'',/TYPESAFE_API_KEY/);
 });
 test('built plugin folder works when copied to a path with spaces without node_modules',()=>{
  const cwd=setup();const installed=join(cwd,'installed plugin');
- cpSync(resolve('plugin'),installed,{recursive:true});
+ cpSync(join(cwd,'fixture-plugin'),installed,{recursive:true});
  for(const path of ['hooks/claude.json','hooks/codex.json','.claude-plugin/plugin.json','.codex-plugin/plugin.json','skills/author-rule/SKILL.md','omp/agent-rules.js','.claude-plugin/marketplace.json','.agents/plugins/marketplace.json'])assert.ok(existsSync(join(installed,path)),path);
  // A root plugin.json takes precedence in Codex and hides .codex-plugin/plugin.json's hooks.
  for(const path of ['node_modules','src','test','docs','plugin.json'])assert.ok(!existsSync(join(installed,path)),path);

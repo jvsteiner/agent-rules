@@ -1,3 +1,5 @@
+import { wrapToolOutput } from './tool-output.js';
+
 const str = (v) => typeof v === "string" && v.length ? v : undefined;
 const obj = (v) => v && typeof v === "object" && !Array.isArray(v) ? v : {};
 const clean = (v) => typeof v === "string" ? v : v == null ? undefined : JSON.stringify(v);
@@ -36,7 +38,8 @@ export function decode(platform, payload) {
     if (e === "tool_start" || e === "tool_result") {
       const input = obj(p.tool_input);
       event.tool = { id: str(p.tool_use_id ?? p.tool_id), name: str(p.tool_name), input,
-        result: clean(p.tool_response), status: name === "PostToolUseFailure" ? "failure" : e === "tool_result" ? "success" : "pending" };
+        result: clean(p.tool_response ?? p.error), status: name === "PostToolUseFailure" ? "failure" : e === "tool_result" ? "success" : "pending",
+        ...(e === 'tool_result' ? { output: p.tool_response } : {}) };
       const path = str(input.file_path ?? input.path);
       const text = str(input.new_string ?? input.content ?? input.file_text);
       if (path && text !== undefined && ["Edit", "Write"].includes(event.tool.name)) event.changes = [{ path, text, context: clean(input.old_string) }];
@@ -76,6 +79,14 @@ export function encode(platform, effect = {}) {
   if (!message) return {};
   if (action === "none") return effect.notice ? { systemMessage: effect.notice } : {};
   if (!["claude", "codex"].includes(platform)) return {};
+  if (action === 'wrap_tool_result') {
+    const replacement = platform === 'claude' && effect.toolStatus !== 'failure'
+      ? wrapToolOutput(effect.toolName, effect.toolOutput, effect.feedback ?? effect.notice) : { wrapped: false };
+    const hookEventName = effect.toolStatus === 'failure' && platform === 'claude' ? 'PostToolUseFailure' : 'PostToolUse';
+    return { hookSpecificOutput: { hookEventName, additionalContext: effect.feedback ?? effect.notice,
+      ...(replacement.wrapped ? { updatedToolOutput: replacement.output } : {}) },
+      systemMessage: [effect.notice, !replacement.wrapped ? 'Agent Rules: this host or result shape supports a warning alongside the result, not replacement.' : ''].filter(Boolean).join(' ') };
+  }
   // Claude Code and Codex accept the same hook output shapes.
   if (action === "block_prompt") return { decision: "block", reason: effect.feedback ?? effect.notice, systemMessage: effect.notice };
   if (action === "deny_tool") return { hookSpecificOutput: { hookEventName: "PreToolUse", permissionDecision: "deny", permissionDecisionReason: effect.feedback ?? effect.notice }, systemMessage: effect.notice };

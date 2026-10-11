@@ -28,7 +28,8 @@
           {
             "type": "command",
             "command": "node \"${CLAUDE_PLUGIN_ROOT}/dist/behavior-hook.js\" claude",
-            "timeout": 8
+            "timeout": 8,
+            "onFailure": "block"
           }
         ]
       }

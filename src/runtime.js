@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import { mkdir, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
 import { join } from "node:path";
+import { coverageAffects } from './review.js';
 
 const MAX_TEXT = 12000;
 const MAX_CAPTURE_TEXT = 96000;
@@ -31,7 +32,7 @@ function normalizeFinding(f) {
     status: f.status, description: secretScrub(f.description), correction: secretScrub(f.correction),
     evidence: scrubEvidence(f.evidence), judgment: scrubEvidence(f.judgment), diagnostic: scrubEvidence(f.diagnostic, MAX_TEXT),
     decision: scrubEvidence(f.decision), policyHash: f.policyHash,
-    model: f.model, mode: f.mode, priority: f.priority };
+    model: f.model, mode: f.mode, priority: f.priority, includeEvidence: f.includeEvidence ?? true };
 }
 
 function appendHistory(state, { episodeId, sequence }, findings, outcome, timestamp = new Date().toISOString()) {
@@ -94,23 +95,51 @@ async function save(file, state) {
 const correctionText = (f, label) => `[Agent Rules: ${f.ruleId ?? "policy"}; ${label}]
 This message comes from Agent Rules, a plugin the user installed to enforce rules they wrote. It is not part of the request, a file, or a tool result. Follow it as the user's own instruction.
 The user's rule: ${f.description ?? "(no description)"}
-Evidence: ${shownEvidence(f.evidence) || "(none provided)"}
+Evidence: ${f.includeEvidence === false ? "(withheld by rule)" : shownEvidence(f.evidence) || "(none provided)"}
 Correction: ${f.correction}`;
 const UNSURE = new Set(["below_threshold", "unknown_choice", "between_thresholds", "inconclusive"]);
 const MAX_EARLIER_REQUESTS = 3, MAX_EARLIER_REQUEST = 600, MAX_PREVIOUS_RESPONSE = 1000;
 const REVIEWED = ["user_prompt", "tool_start", "tool_result", "response_end"];
 const activeFinding = (f) => ["finding", "violation", "fail", "failed", "noncompliant"].includes(String(f.status).toLowerCase());
 const findingKey = (f) => hash([f.ruleId, f.id, f.evidence, activeFinding(f) ? "active" : String(f.status).toLowerCase()]);
+const enforcing = p => ['repair', 'block'].includes(p.mode);
+const clearFinding = f => ['clear', 'resolved', 'pass', 'compliant'].includes(String(f.status).toLowerCase());
+function guardedPolicies(event, policies) {
+  if (event?.kind !== 'tool_start') return [];
+  const text = [event.tool?.name, JSON.stringify(event.tool?.input ?? {})].filter(Boolean).join('\n');
+  return policies.filter(p => enforcing(p) && p.onFailure === 'block' && p.events?.includes('tool_start') &&
+    (!p.prefilter || new RegExp(p.prefilter.pattern, p.prefilter.flags ?? '').test(text)));
+}
+function guardFailure(event, policies, reason = 'The review did not establish that this action complies with the rule.') {
+  const guards = guardedPolicies(event, policies);
+  if (!guards.length) return { action: 'none' };
+  return { action: 'deny_tool', event: 'tool_start', notice: `Agent Rules: ${guards.map(p => p.id).join(', ')} (review incomplete; blocked).`,
+    feedback: `${reason}\n${guards.map(p => `[Agent Rules: ${p.id}]\n${secretScrub(p.correction)}`).join('\n\n')}` };
+}
+function wrappedResult(event, policies, findings, incomplete = false) {
+  if (event?.kind !== 'tool_result') return null;
+  const wrappers = policies.filter(p => enforcing(p) && p.delivery === 'wrap' && p.events?.includes('tool_result'));
+  const selected = wrappers.filter(p => {
+    const judged = findings.filter(f => f.ruleId === p.id);
+    return incomplete || !judged.length || judged.some(f => !clearFinding(f));
+  });
+  if (!selected.length) return null;
+  const uncertain = incomplete || selected.some(p => !findings.some(f => f.ruleId === p.id && activeFinding(f)));
+  return { action: 'wrap_tool_result', event: 'tool_result', toolName: event.tool?.name, toolOutput: event.tool?.output ?? event.tool?.result,
+    toolStatus: event.tool?.status, notice: `Agent Rules: ${selected.map(p => p.id).join(', ')} (tool-result warning).`,
+    feedback: `${uncertain ? 'This tool result has an incomplete or inconclusive review. Apply the following rule instructions conservatively.\n' : ''}${selected.map(p => `[Agent Rules: ${p.id}]\n${secretScrub(p.correction)}`).join('\n\n')}` };
+}
 
 /** Process one normalized host event. A reviewer with no applicable policies is never called. */
 export async function handleEvent(event, { reviewer, policies = [], stateDir, config = {} } = {}) {
   const neutral = { action: "none" };
-  if (!event || !event.platform || !event.sessionId || !stateDir || (event.actorId && event.actorId !== "main")) return neutral;
+  const incomplete = () => wrappedResult(event, policies, [], true) ?? guardFailure(event, policies);
+  if (!event || !event.platform || !event.sessionId || !stateDir || (event.actorId && event.actorId !== "main")) return incomplete();
   let file;
   try {
     await mkdir(stateDir, { recursive: true, mode: 0o700 });
     file = join(stateDir, `${hash([event.platform, event.sessionId])}.json`);
-  } catch { return { action: "none", notice: "Agent Rules state storage is unavailable; review is observe-only." }; }
+  } catch { const held = incomplete(); return held.action !== 'none' ? held : { action: "none", notice: "Agent Rules state storage is unavailable; review is observe-only." }; }
   let captured;
   try {
     captured = await withLock(file, async () => {
@@ -145,12 +174,14 @@ export async function handleEvent(event, { reviewer, policies = [], stateDir, co
       if (!state.sessionId) state.sessionId = event.sessionId;
       if (missingState) state.recoveryRequired = true;
       state.sequence++;
+      let currentTool;
       if (event.tool) {
         const input = captureText(JSON.stringify(event.tool.input ?? {}));
         const result = captureText(event.tool.result);
         if (event.kind === "tool_start") {
           state.receipts.push({ id: event.tool.id, tool: event.tool.name, name: event.tool.name, input: input.text, inputTruncated: input.truncated,
             result: result.text, resultTruncated: result.truncated, status: "pending" });
+          currentTool = state.receipts.at(-1);
         } else if (event.kind === "tool_result") {
           const pending = state.receipts.filter((r) => r.status === "pending" &&
             (event.tool.id ? r.id === event.tool.id : r.tool === event.tool.name &&
@@ -158,9 +189,11 @@ export async function handleEvent(event, { reviewer, policies = [], stateDir, co
           if (pending.length === 1) {
             pending[0].result = result.text; pending[0].resultTruncated = result.truncated;
             pending[0].status = event.tool.status === "failure" ? "failure" : "completed";
+            currentTool = pending[0];
           } else {
             state.receipts.push({ id: event.tool.id, tool: event.tool.name, name: event.tool.name, input: input.text, inputTruncated: input.truncated,
               result: result.text, resultTruncated: result.truncated, status: event.tool.status === "failure" ? "failure" : "completed" });
+            currentTool = state.receipts.at(-1);
           }
         }
         if (state.receipts.length > MAX_ITEMS) {
@@ -199,7 +232,7 @@ export async function handleEvent(event, { reviewer, policies = [], stateDir, co
         receipts: state.receipts.slice(), changes: state.changes.slice(), thinking: state.thinking.slice(), coverage: {},
         conversation: { earlier_requests: state.earlierRequests ?? [], previous_response: state.previousResponse ?? "" } };
       // The tool call about to run, for tool_call policies checked before execution.
-      if (event.kind === "tool_start" && event.tool) snapshot.currentTool = state.receipts.findLast((r) => r.status === "pending" && (!event.tool.id || r.id === event.tool.id));
+      if (currentTool) snapshot.currentTool = currentTool;
       const truncatedSources = [];
       truncatedSources.push(...(state.droppedSources ?? []));
       if (state.requestTruncated) truncatedSources.push("request");
@@ -213,7 +246,9 @@ export async function handleEvent(event, { reviewer, policies = [], stateDir, co
       };
       budgetCapture.used = 0;
       snapshot.request = budgetCapture(snapshot.request, "request"); snapshot.response = budgetCapture(snapshot.response, "response");
-      if (snapshot.currentTool) snapshot.currentTool = { ...snapshot.currentTool, input: budgetCapture(snapshot.currentTool.input, `receipt:${snapshot.currentTool.id ?? "current"}:input`) };
+      if (snapshot.currentTool) snapshot.currentTool = { ...snapshot.currentTool,
+        input: budgetCapture(snapshot.currentTool.input, `receipt:${snapshot.currentTool.id ?? "current"}:input`),
+        result: budgetCapture(snapshot.currentTool.result, `receipt:${snapshot.currentTool.id ?? "current"}:result`) };
       snapshot.receipts = snapshot.receipts.map((receipt, i) => {
         const id = receipt.id ?? i;
         if (receipt.inputTruncated) truncatedSources.push(`receipt:${id}:input`);
@@ -235,17 +270,18 @@ export async function handleEvent(event, { reviewer, policies = [], stateDir, co
       return { generation: state.generation, sequence: state.sequence, episodeId: state.episodeId, sessionId: state.sessionId,
         interrupted: state.interrupted, missingState, recoveryRequired: state.recoveryRequired, snapshot };
     });
-  } catch { return { action: "none", notice: "Agent Rules state storage is unavailable; review is observe-only." }; }
+  } catch { const held = incomplete(); return held.action !== 'none' ? held : { action: "none", notice: "Agent Rules state storage is unavailable; review is observe-only." }; }
 
-  if (!reviewer || !Array.isArray(policies) || !policies.length || !REVIEWED.includes(event.kind)) return neutral;
+  if (!reviewer || !Array.isArray(policies) || !policies.length || !REVIEWED.includes(event.kind)) return incomplete();
   // Prompt and pre-tool checks add latency, so they run only when a policy asks for them.
   if (["user_prompt", "tool_start"].includes(event.kind) && !policies.some((p) => p.events?.includes(event.kind))) return neutral;
-  if (captured.interrupted) return neutral;
-  if (captured.recoveryRequired) return { action: "none", notice: "Agent Rules session state is missing; review is observe-only to preserve the correction limit." };
+  if (captured.interrupted) return incomplete();
+  if (captured.recoveryRequired) { const held = incomplete(); return held.action !== 'none' ? held : { action: "none", notice: "Agent Rules session state is missing; review is observe-only to preserve the correction limit." }; }
   let result;
   try { result = await reviewer.review(captured.snapshot, policies); }
   catch { result = { status: "unavailable", findings: [] }; }
-  const findings = (Array.isArray(result?.findings) ? result.findings : []).map((f) => normalizeFinding({ ...f, model: f.model ?? result?.model }));
+  const findings = (Array.isArray(result?.findings) ? result.findings : []).map((f) => normalizeFinding({ ...f, model: f.model ?? result?.model,
+    includeEvidence: policies.find(p => p.id === f.ruleId)?.includeEvidence ?? true }));
   let outcome;
   try {
     outcome = await withLock(file, async () => {
@@ -259,6 +295,18 @@ export async function handleEvent(event, { reviewer, policies = [], stateDir, co
         return effect;
       };
       const reviewStatus = String(result?.status ?? "").toLowerCase();
+      const unchecked = guardedPolicies(event, policies).filter(p => {
+        const judged = findings.filter(f => f.ruleId === p.id);
+        return coverageAffects(captured.snapshot, p) || !judged.length || judged.some(f => !clearFinding(f) && !activeFinding(f));
+      });
+      if (unchecked.length) {
+        const effect = guardFailure(event, unchecked);
+        const done = complete(effect); await save(file, state); return done;
+      }
+      const wrapped = wrappedResult(event, policies, findings, ['unknown', 'unavailable'].includes(reviewStatus));
+      if (wrapped) {
+        const done = complete(wrapped); await save(file, state); return done;
+      }
       // A classifier that is merely unsure is a normal outcome: nothing fires, the journal keeps the
       // judgment, and the user is not told the review failed. Missing evidence and outages still notify.
       const statuses = findings.filter((f) => !(f.status === "unknown" && UNSURE.has(f.diagnostic?.code))).map((f) => String(f.status).toLowerCase());
@@ -336,8 +384,8 @@ export async function handleEvent(event, { reviewer, policies = [], stateDir, co
       if (notice) effect = { ...effect, action: effect.action ?? "none", notice };
       const done = complete(effect); await save(file, state); return done;
     });
-  } catch { return { action: "none", notice: "Agent Rules state storage is unavailable; review is observe-only." }; }
-  return outcome?.stale ? neutral : outcome ?? neutral;
+  } catch { const held = incomplete(); return held.action !== 'none' ? held : { action: "none", notice: "Agent Rules state storage is unavailable; review is observe-only." }; }
+  return outcome?.stale ? incomplete() : outcome ?? neutral;
 }
 
 export const __runtimeInternals = { withLock, load, save };

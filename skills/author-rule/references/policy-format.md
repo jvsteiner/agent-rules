@@ -52,6 +52,7 @@ Use only evidence groups available to the runtime: `request`, `conversation`, `r
 | `user_prompt` | `request` | The user's request, before the agent starts | Adds the correction as context. In `block` mode, rejects the prompt so the model never sees it |
 | `tool_start` | `tool_call` | The pending tool call: tool name and input | Denies the call, and the agent receives the correction. Applies to every matching call |
 | `tool_result` | `code_change` | A completed edit | Adds the correction as context |
+| `tool_result` | `tool_result` | The current tool's full returned text | Adds the correction as context, or wraps content when `delivery: wrap` is set |
 | `response_end` | `response`, `response_span`, `thinking`, `thinking_span` | The finished reply | Stops the turn, and the agent rewrites the reply |
 
 Prompt and pre-tool checks add a Jev request, about two seconds, to every prompt or tool call, and run only when an enabled policy uses them. A topic rule usually needs a `request` policy to stop work early and a `response` policy for replies that drift onto the topic; add a `tool_call` policy when the agent could act on the topic without being asked. All three hosts (Claude Code, Codex, and omp) support every check point. For `tool_call`, leave `requires` empty; the pending call is the evidence.
@@ -61,6 +62,29 @@ For Jev detectors, `question.type` is `choice`, `noul`, or `score`; instructions
 `prefilter` is an optional mapping with a regular expression `pattern` and optional `flags` (`i`, `m`, `s`, `u`). It runs locally on each candidate before any Jev call: a candidate it does not match is recorded as clear, with no Jev request and no cost. Give every `tool_call` and `request` policy a prefilter that matches only the calls or messages the rule could concern, such as `^(Edit|Write|MultiEdit|apply_patch)$` with flag `m` for edit rules or `\bgit\s+(commit|push)\b` for a commit rule. A `tool_call` candidate is the tool name on the first line followed by its JSON input. Keep the pattern broad enough to catch every violation; test it against the violating fixtures, because a violation the prefilter skips is a miss.
 
 `intervention` is `observe`, `repair`, or `block`; it defaults to observe. Repair and block policies need a nonempty `## Correction` section. The section ends at the next level-two heading. Do not put credentials, shell commands, interpolation, or arbitrary filesystem requests in policy text. Probability thresholds are authored policy settings, not claims of human calibration.
+
+### Tool-result delivery and review failures
+
+These optional controls are general: the rule defines the category, detector and instruction.
+
+- `delivery: wrap` requires `target: tool_result` and only `events: [tool_result]`. In repair/block mode the Correction text surrounds the result payload before delivery to Claude. Clear results are unchanged; unknown/unavailable results receive the instruction with an incomplete-review warning. Observe mode never replaces content. Each result is checked independently of response correction caps.
+- `on_failure: block` requires `target: tool_call` and only `events: [tool_start]`. In repair/block mode inconclusive, missing, truncated, unavailable or stale review and state failures deny eligible calls. Without it, the existing fail-open behavior remains. A local prefilter miss is clear, not a failure. Broad prefilters can hold reads as well as writes during outages.
+- `include_evidence: false` omits captured source text from agent feedback. Evidence remains in the local journal and, for Jev rules, the remote review request.
+
+Claude replacement uses `PostToolUse.updatedToolOutput`. Structured Read text, Bash payload fields and MCP content blocks retain their metadata and non-text data. Unsupported/binary results, failed tool calls (`PostToolUseFailure` has no replacement field), Codex and omp receive a warning alongside the result. A crashed/timed-out post-tool hook can leave the original result without a wrapper. This is an advisory wrapper, not an ingestion barrier. Pre-tool command-hook failures are held using Claude's `onFailure: block` (requires Claude Code 2.1.295+); startup errors deny pre-tool calls.
+
+For approval gates, define approved disclosure as a clear outcome in the detector: inspect the specific pending content and destination against the user's request and conversation. A blocked call can be retried after explicit approval in chat; there is no new native permission popup. General requests to produce a document do not imply approval to disclose restricted content. Opaque scripts cannot be content-scanned from their arguments: classify an uninspectable write as unknown, so `on_failure: block` holds it. This does not add sandboxing or inspect hidden side effects of arbitrary programs.
+
+Example frontmatter controls for a result policy:
+
+```yaml
+events: [tool_result]
+target: tool_result
+delivery: wrap
+include_evidence: false
+```
+
+Put the actual warning and consent instructions in `## Correction`, not in plugin source code.
 
 ## JSONL evaluation fixtures
 

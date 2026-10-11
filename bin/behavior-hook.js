@@ -13,12 +13,18 @@ import { matchPayload } from '../src/match.js';
 import { maintainJournal } from '../src/journal-maintenance.js';
 
 const root=resolve(dirname(fileURLToPath(import.meta.url)),'..');
+let hookEventName;
 async function main(){
  let input='';for await(const chunk of process.stdin){input+=chunk;if(input.length>2_000_000)throw new Error('payload too large');}
- const payload=JSON.parse(input);const platform=process.argv[2];const event=decode(platform,payload);if(!event)return;
+ const payload=JSON.parse(input);hookEventName=payload.hook_event_name??payload.type;const platform=process.argv[2];const event=decode(platform,payload);if(!event)return;
  const {config,diagnostics}=await loadConfig({projectRoot:payload.cwd??process.cwd()});
  if(event.kind==='session_start')await maintainJournal(config.stateDir);
  const loaded=await loadPolicies({directories:[join(root,'policies'),...config.policyDirectories],modes:config.rules});
+ const failedGuards=loaded.diagnostics.filter(d=>d.onFailure==='block'&&!['off','observe'].includes(config.rules[d.id]));
+ if(event.kind==='tool_start'&&failedGuards.length){
+  const notice='Agent Rules: a failure-blocking rule could not be loaded; the tool call is held. Run validate/status to repair the rule.';
+  process.stdout.write(JSON.stringify(encode(platform,{action:'deny_tool',event:'tool_start',notice,feedback:notice})));return;
+ }
  const reviewer=createReviewer({client:createJevClient(),model:config.model,deadlineMs:config.reviewDeadlineMs,maxReviewRequests:config.maxReviewRequests});
  let effect=await handleEvent(event,{reviewer,policies:loaded.policies,stateDir:config.stateDir,config});
  // Preserve existing deterministic checks separately from semantic correction accounting.
@@ -39,4 +45,8 @@ async function main(){
  if(event.kind==='session_start'&&!process.env.TYPESAFE_API_KEY&&loaded.policies.some(p=>p.detector?.type==='jev'))effect.notice=[effect.notice,'Agent Rules: TYPESAFE_API_KEY is not set, so Jev rules cannot run. Export it in your shell profile (for example ~/.zshrc) and restart. See the README.'].filter(Boolean).join(' ');
  const reply=encode(platform,effect);if(Object.keys(reply).length)process.stdout.write(JSON.stringify(reply));
 }
-main().catch(()=>{process.stdout.write(JSON.stringify({systemMessage:'Agent Rules: review unavailable (invalid input or runtime failure). Run status for configuration diagnostics.'}));});
+main().catch(()=>{
+ const notice='Agent Rules: review unavailable (invalid input or runtime failure). Run status for configuration diagnostics.';
+ if(hookEventName==='PreToolUse')process.stdout.write(JSON.stringify({hookSpecificOutput:{hookEventName:'PreToolUse',permissionDecision:'deny',permissionDecisionReason:notice},systemMessage:notice}));
+ else {process.stdout.write(JSON.stringify({systemMessage:notice}));if(!hookEventName)process.exitCode=2;}
+});

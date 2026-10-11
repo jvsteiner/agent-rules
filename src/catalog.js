@@ -5,7 +5,7 @@ import { parseDocument } from 'yaml';
 
 const EVIDENCE = new Set(['request', 'conversation', 'response', 'receipts', 'changes', 'thinking', 'constraints']);
 const EVENTS = new Set(['session_start', 'user_prompt', 'tool_start', 'tool_result', 'thinking_observed', 'response_end', 'interrupt', 'session_end']);
-const TARGETS = new Set(['request', 'tool_call', 'response', 'response_span', 'code_change', 'thinking', 'thinking_span']);
+const TARGETS = new Set(['request', 'tool_call', 'tool_result', 'response', 'response_span', 'code_change', 'thinking', 'thinking_span']);
 function rejectUnknown(value, allowed, file, field) {
   for (const key of Object.keys(value)) if (!allowed.includes(key)) fail(file, `${field}.${key}`, 'is not a supported field');
 }
@@ -56,12 +56,16 @@ export function parsePolicy(source, { file = '<policy>' } = {}) {
   if (doc.errors.length) fail(file, 'YAML', doc.errors[0].message);
   const raw = doc.toJS();
   if (!raw || typeof raw !== 'object' || Array.isArray(raw)) fail(file, 'frontmatter', 'must be a mapping');
-  rejectUnknown(raw, ['schema', 'id', 'revision', 'description', 'events', 'target', 'requires', 'uses', 'prefilter', 'priority', 'detector', 'intervention'], file, 'frontmatter');
+  rejectUnknown(raw, ['schema', 'id', 'revision', 'description', 'events', 'target', 'requires', 'uses', 'prefilter', 'priority', 'detector', 'intervention', 'delivery', 'on_failure', 'include_evidence'], file, 'frontmatter');
   if (raw.schema !== 'agent-rules/v1') fail(file, 'schema', 'must be agent-rules/v1');
   if (typeof raw.id !== 'string' || !/^[a-zA-Z0-9][a-zA-Z0-9._-]*$/.test(raw.id)) fail(file, 'id', 'must be a nonempty stable rule identifier');
   if (typeof raw.description !== 'string' || !raw.description.trim()) fail(file, 'description', 'is required');
   if (!Array.isArray(raw.events) || !raw.events.length || raw.events.some(x => !EVENTS.has(x))) fail(file, 'events', `must contain supported event names (${[...EVENTS].join(', ')})`);
   if (!TARGETS.has(raw.target)) fail(file, 'target', `must be one of ${[...TARGETS].join(', ')}`);
+  if (raw.target === 'tool_result' && raw.events.some(e => e !== 'tool_result')) fail(file, 'target', 'tool_result requires only tool_result events');
+  if (raw.delivery !== undefined && (raw.delivery !== 'wrap' || raw.target !== 'tool_result')) fail(file, 'delivery', 'wrap requires target tool_result');
+  if (raw.on_failure !== undefined && (raw.on_failure !== 'block' || raw.target !== 'tool_call' || raw.events.some(e => e !== 'tool_start'))) fail(file, 'on_failure', 'block requires a tool_call policy with only tool_start events');
+  if (raw.include_evidence !== undefined && typeof raw.include_evidence !== 'boolean') fail(file, 'include_evidence', 'must be a boolean');
   if (!Array.isArray(raw.requires) || raw.requires.some(x => typeof x !== 'string' || !EVIDENCE.has(x))) {
     const bad = Array.isArray(raw.requires) ? raw.requires.find(x => typeof x !== 'string' || !EVIDENCE.has(x)) : undefined;
     fail(file, 'requires', `unsupported evidence name ${JSON.stringify(bad)} (supported: ${[...EVIDENCE].join(', ')})`);
@@ -109,7 +113,8 @@ export function parsePolicy(source, { file = '<policy>' } = {}) {
   if (['repair', 'block'].includes(mode) && !correction) fail(file, 'Correction', 'section is required for repair and block policies');
   const hash = createHash('sha256').update(JSON.stringify({ frontmatter: raw, correction })).digest('hex');
   return Object.freeze({ id: raw.id, description: raw.description, events: Object.freeze([...raw.events]), target: raw.target,
-    requires: Object.freeze([...raw.requires]), uses: Object.freeze([...(raw.uses ?? [])]), prefilter: raw.prefilter ? Object.freeze({ ...raw.prefilter }) : undefined, priority: raw.priority, detector: Object.freeze(detector), correction, hash, mode });
+    requires: Object.freeze([...raw.requires]), uses: Object.freeze([...(raw.uses ?? [])]), prefilter: raw.prefilter ? Object.freeze({ ...raw.prefilter }) : undefined, priority: raw.priority, detector: Object.freeze(detector), correction, hash, mode,
+    delivery: raw.delivery, onFailure: raw.on_failure, includeEvidence: raw.include_evidence ?? true });
 }
 
 export async function loadPolicies({ directories = [], modes = {} } = {}) {
@@ -127,7 +132,8 @@ export async function loadPolicies({ directories = [], modes = {} } = {}) {
       catch (error) {
         const sourceText = await readFile(file, 'utf8').catch(() => '');
         const id = /(?:^|\n)id:\s*['"]?([\w.-]+)/.exec(sourceText)?.[1];
-        diagnostics.push({ file, ...(id ? { id } : {}), message: error.message });
+        const onFailure = /(?:^|\n)on_failure:\s*['"]?block(?:['"]?\s*(?:\n|$))/.test(sourceText) ? 'block' : undefined;
+        diagnostics.push({ file, ...(id ? { id } : {}), ...(onFailure ? { onFailure } : {}), message: error.message });
         // Best-effort identity extraction ensures malformed overrides tombstone their lower-precedence version.
         if (id) pending.push({ id, parsed: null, file });
       }
@@ -141,9 +147,9 @@ export async function loadPolicies({ directories = [], modes = {} } = {}) {
   for (const [id, parsed] of chosen) {
     if (!parsed) continue;
     const mode = modes[id] ?? parsed.mode;
-    if (!['off', 'observe', 'repair', 'block'].includes(mode)) { diagnostics.push({ id, message: `invalid mode ${JSON.stringify(mode)}; policy disabled` }); continue; }
+    if (!['off', 'observe', 'repair', 'block'].includes(mode)) { diagnostics.push({ id, ...(parsed.onFailure ? { onFailure: parsed.onFailure } : {}), message: `invalid mode ${JSON.stringify(mode)}; policy disabled` }); continue; }
     if (mode === 'off') continue;
-    if (['repair', 'block'].includes(mode) && !parsed.correction) { diagnostics.push({ id, message: `${mode} mode requires a Correction section; policy disabled` }); continue; }
+    if (['repair', 'block'].includes(mode) && !parsed.correction) { diagnostics.push({ id, ...(parsed.onFailure ? { onFailure: parsed.onFailure } : {}), message: `${mode} mode requires a Correction section; policy disabled` }); continue; }
     policies.push(Object.freeze({ ...parsed, mode }));
   }
   return { policies: Object.freeze(policies), diagnostics };

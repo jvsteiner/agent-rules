@@ -1,21 +1,27 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, readdirSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, readdirSync, cpSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { createExtension } from '../omp/agent-rules.js';
 
+const originalConfig = process.env.AGENT_RULES_CONFIG;
+test.afterEach(() => { if (originalConfig === undefined) delete process.env.AGENT_RULES_CONFIG; else process.env.AGENT_RULES_CONFIG = originalConfig; });
+
 function project() {
   const cwd = mkdtempSync(join(tmpdir(), 'agent-rules omp '));
-  mkdirSync(join(cwd, '.agent-rules/rules'), { recursive: true });
+  mkdirSync(join(cwd, 'fixture-plugin/policies'), { recursive: true });
+  mkdirSync(join(cwd, '.agent-rules'), { recursive: true });
   writeFileSync(join(cwd, '.agent-rules/config.json'), JSON.stringify({ rules: { 'reporting.test-result-contradiction': 'off', 'reporting.premature-completion': 'off', 'communication.unexplained-jargon': 'off', 'communication.cat-pictures': 'off' } }));
-  writeFileSync(join(cwd, '.agent-rules/rules/demo.md'), `---\nschema: agent-rules/v1\nid: demo\ndescription: Replace the deliberate trigger.\nevents: [response_end]\ntarget: response\nrequires: [response]\npriority: 90\ndetector:\n  type: regex\n  pattern: TRIGGER\nintervention: repair\n---\n## Correction\nReplace TRIGGER with CORRECTED.\n`);
+  writeFileSync(join(cwd, 'fixture-plugin/policies/demo.md'), `---\nschema: agent-rules/v1\nid: demo\ndescription: Replace the deliberate trigger.\nevents: [response_end]\ntarget: response\nrequires: [response]\npriority: 90\ndetector:\n  type: regex\n  pattern: TRIGGER\nintervention: repair\n---\n## Correction\nReplace TRIGGER with CORRECTED.\n`);
+  cpSync(resolve('plugin'), join(cwd, 'fixture-plugin'), { recursive: true });
+  process.env.AGENT_RULES_CONFIG = join(cwd, '.agent-rules/config.json');
   return cwd;
 }
 
 function host(cwd) {
   const handlers = {}; const notices = [];
-  createExtension(resolve('bin/behavior-hook.js'))({ on: (name, handler) => { handlers[name] = handler; } });
+  createExtension(join(cwd, 'fixture-plugin/dist/behavior-hook.js'))({ on: (name, handler) => { handlers[name] = handler; } });
   const aborts = []; const widgets = {};
   const ctx = { cwd, hasUI: true, sessionManager: { getSessionId: () => 'omp-session' }, abort: () => aborts.push(true),
     ui: { notify: (message) => notices.push(message), setWidget: (key, lines) => { widgets[key] = lines; } } };
@@ -41,7 +47,7 @@ test('omp session_stop runs the shared hook: correction, then clear after the fi
 });
 
 function policy(cwd, id, events, target, pattern, mode = 'repair') {
-  writeFileSync(join(cwd, `.agent-rules/rules/${id}.md`), `---\nschema: agent-rules/v1\nid: ${id}\ndescription: Probe ${id}.\nevents: [${events}]\ntarget: ${target}\nrequires: []\npriority: 90\ndetector:\n  type: regex\n  pattern: ${pattern}\nintervention: ${mode}\n---\n## Correction\nDo not handle ${pattern}.\n`);
+  writeFileSync(join(cwd, `fixture-plugin/policies/${id}.md`), `---\nschema: agent-rules/v1\nid: ${id}\ndescription: Probe ${id}.\nevents: [${events}]\ntarget: ${target}\nrequires: []\npriority: 90\ndetector:\n  type: regex\n  pattern: ${pattern}\nintervention: ${mode}\n---\n## Correction\nDo not handle ${pattern}.\n`);
 }
 
 test('omp before_agent_start adds prompt context and tool_call blocks the pending tool', async () => {

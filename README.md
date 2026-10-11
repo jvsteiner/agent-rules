@@ -1,5 +1,7 @@
 # agent-rules
 
+Policies can wrap incoming tool results using `target: tool_result` and `delivery: wrap`. The warning comes from the rule's Correction section; the plugin contains no topic-specific warning logic. Claude receives the original payload inside the warning. A separate pre-tool rule can deny writes until its detector recognizes explicit user approval, with `on_failure: block` to hold calls when review is incomplete and `include_evidence: false` to avoid repeating source text in feedback. See [policy format](skills/author-rule/references/policy-format.md#tool-result-delivery-and-review-failures) for host support and limitations. These controls do not prevent sensitive data reaching Jev, the model, or the local journal.
+
 Editable behavioral policies for Claude Code, Codex, and omp. Jev evaluates the work;
 the coding agent receives a specific correction and gets another attempt.
 
